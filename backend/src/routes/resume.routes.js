@@ -58,11 +58,13 @@ router.post('/upload', authenticate, uploadResume, handleUploadError, async (req
                         extracted_experience = $6,
                         extracted_education = $7,
                         extracted_certifications = $8,
-                        extraction_confidence = $9,
-                        ai_analysis = $10,
-                        ai_improvement_suggestions = $11,
+                        extracted_references = $9,
+                        extracted_personal_info = $10,
+                        extraction_confidence = $11,
+                        ai_analysis = $12,
+                        ai_improvement_suggestions = $13,
                         parsed_at = CURRENT_TIMESTAMP
-                    WHERE id = $12
+                    WHERE id = $14
                 `, [
                     parsedData.rawText,
                     JSON.stringify(parsedData),
@@ -72,6 +74,8 @@ router.post('/upload', authenticate, uploadResume, handleUploadError, async (req
                     JSON.stringify(parsedData.experience),
                     JSON.stringify(parsedData.education),
                     JSON.stringify(parsedData.certifications),
+                    JSON.stringify(parsedData.references),
+                    JSON.stringify(parsedData.personalInfo),
                     parsedData.confidence,
                     JSON.stringify(parsedData.aiAnalysis),
                     parsedData.improvementSuggestions,
@@ -172,9 +176,11 @@ router.post('/:id/reparse', authenticate, async (req, res) => {
                         extracted_experience = $6,
                         extracted_education = $7,
                         extracted_certifications = $8,
-                        extraction_confidence = $9,
+                        extracted_references = $9,
+                        extracted_personal_info = $10,
+                        extraction_confidence = $11,
                         parsed_at = CURRENT_TIMESTAMP
-                    WHERE id = $10
+                    WHERE id = $12
                 `, [
                     parsedData.rawText,
                     JSON.stringify(parsedData),
@@ -184,6 +190,8 @@ router.post('/:id/reparse', authenticate, async (req, res) => {
                     JSON.stringify(parsedData.experience),
                     JSON.stringify(parsedData.education),
                     JSON.stringify(parsedData.certifications),
+                    JSON.stringify(parsedData.references),
+                    JSON.stringify(parsedData.personalInfo),
                     parsedData.confidence,
                     id
                 ]);
@@ -264,6 +272,7 @@ router.get('/', authenticate, async (req, res) => {
                    extraction_confidence, parsing_error, raw_text,
                    extracted_contact, extracted_summary, extracted_skills, 
                    extracted_experience, extracted_education, extracted_certifications,
+                   extracted_references, extracted_personal_info,
                    created_at, parsed_at
             FROM resumes
             WHERE ${ownerType === 'candidate' ? 'candidate_id' : 'employee_id'} = $1
@@ -345,6 +354,74 @@ router.delete('/:id', authenticate, async (req, res) => {
     } catch (error) {
         console.error('Delete resume error:', error);
         res.status(500).json({ error: 'Failed to delete resume' });
+    }
+});
+
+// Update parsed/extracted data (editable by owner)
+router.put('/:id/parsed-data', authenticate, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const {
+            extracted_contact,
+            extracted_personal_info,
+            extracted_summary,
+            extracted_skills,
+            extracted_experience,
+            extracted_education,
+            extracted_certifications,
+            extracted_references
+        } = req.body;
+
+        // Verify ownership
+        let ownerField, ownerId;
+        if (req.user.role === 'candidate') {
+            const profile = await db.query('SELECT id FROM candidate_profiles WHERE user_id = $1', [req.user.id]);
+            if (profile.rows.length === 0) return res.status(403).json({ error: 'Access denied' });
+            ownerField = 'candidate_id';
+            ownerId = profile.rows[0].id;
+        } else if (req.user.role === 'employee') {
+            const profile = await db.query('SELECT id FROM employee_profiles WHERE user_id = $1', [req.user.id]);
+            if (profile.rows.length === 0) return res.status(403).json({ error: 'Access denied' });
+            ownerField = 'employee_id';
+            ownerId = profile.rows[0].id;
+        } else {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+
+        const result = await db.query(`
+            UPDATE resumes SET
+                extracted_contact = COALESCE($1, extracted_contact),
+                extracted_personal_info = COALESCE($2, extracted_personal_info),
+                extracted_summary = COALESCE($3, extracted_summary),
+                extracted_skills = COALESCE($4, extracted_skills),
+                extracted_experience = COALESCE($5, extracted_experience),
+                extracted_education = COALESCE($6, extracted_education),
+                extracted_certifications = COALESCE($7, extracted_certifications),
+                extracted_references = COALESCE($8, extracted_references),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $9 AND ${ownerField} = $10
+            RETURNING id
+        `, [
+            extracted_contact ? JSON.stringify(extracted_contact) : null,
+            extracted_personal_info ? JSON.stringify(extracted_personal_info) : null,
+            extracted_summary ? JSON.stringify(extracted_summary) : null,
+            extracted_skills ? JSON.stringify(extracted_skills) : null,
+            extracted_experience ? JSON.stringify(extracted_experience) : null,
+            extracted_education ? JSON.stringify(extracted_education) : null,
+            extracted_certifications ? JSON.stringify(extracted_certifications) : null,
+            extracted_references ? JSON.stringify(extracted_references) : null,
+            id,
+            ownerId
+        ]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Resume not found' });
+        }
+
+        res.json({ message: 'Parsed data updated successfully' });
+    } catch (error) {
+        console.error('Update parsed data error:', error);
+        res.status(500).json({ error: 'Failed to update parsed data' });
     }
 });
 

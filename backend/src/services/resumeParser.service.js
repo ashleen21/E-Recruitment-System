@@ -199,33 +199,39 @@ class ResumeParserService {
         // Fallback to regex-based extraction
         console.log('Using regex-based resume parsing...');
         const contact = this.extractContact(text);
+        const personalInfo = this.extractPersonalInfo(text);
         const skills = this.extractSkills(cleanText);
         const education = this.extractEducation(text);
         const experience = this.extractExperience(text);
         const certifications = this.extractCertifications(cleanText);
         const summary = this.extractSummary(text);
         const languages = this.extractLanguages(cleanText);
+        const references = this.extractReferences(text);
 
         // Calculate confidence score based on extracted data quality
         const confidence = this.calculateConfidence({
             contact,
+            personalInfo,
             skills,
             education,
             experience,
             certifications,
             summary,
             languages,
+            references,
             rawText: cleanText
         });
 
         return {
             contact,
+            personalInfo,
             skills,
             education,
             experience,
             certifications,
             summary,
             languages,
+            references,
             rawText: formattedText || cleanText, // Use formatted text for display
             confidence,
             aiAnalysis: null,
@@ -258,6 +264,18 @@ Return a JSON object with the following structure:
         "phone": "phone number with country code if available",
         "location": "city, state/province, country",
         "linkedin": "LinkedIn URL if present"
+    },
+    "personalInfo": {
+        "dateOfBirth": "Date of birth if mentioned (e.g., 1990-01-15 or January 15, 1990)",
+        "nationality": "Nationality or citizenship if mentioned",
+        "gender": "Gender if mentioned",
+        "maritalStatus": "Marital status if mentioned (e.g., Single, Married)",
+        "address": "Full address if provided (street, city, state, zip, country)",
+        "website": "Personal website or portfolio URL if present",
+        "github": "GitHub profile URL if present",
+        "visaStatus": "Visa or work authorization status if mentioned",
+        "drivingLicense": "Driving license information if mentioned",
+        "languages": "Native/first language if specifically stated as personal info"
     },
     "summary": "A brief professional summary extracted or inferred from the resume (2-3 sentences)",
     "skills": [
@@ -298,12 +316,22 @@ Return a JSON object with the following structure:
             "proficiency": "Proficiency level (Native, Fluent, Intermediate, Basic)"
         }
     ],
+    "references": [
+        {
+            "name": "Reference Name",
+            "title": "Job Title",
+            "company": "Company Name",
+            "email": "Email if provided",
+            "phone": "Phone if provided",
+            "relationship": "Professional relationship (e.g., Former Manager, Colleague)"
+        }
+    ],
     "improvementSuggestions": [
         "Suggestion for improving the resume"
     ]
 }
 
-Extract as much information as possible from EVERY section of the resume. For any field not found, return null or an empty array. The skills array should be comprehensive - include every skill mentioned or implied anywhere in the resume.`;
+Extract as much information as possible from EVERY section of the resume. For any field not found, return null or an empty array. The skills array should be comprehensive - include every skill mentioned or implied anywhere in the resume. For references, if the resume says 'References available upon request', return [{"note": "Available upon request"}]. For personalInfo, look for date of birth, nationality, gender, marital status, full address, personal websites, GitHub profiles, visa/work authorization status, and driving license info anywhere in the resume.`;
 
         try {
             const response = await openai.chat.completions.create({
@@ -325,12 +353,14 @@ Extract as much information as possible from EVERY section of the resume. For an
 
             return {
                 contact: parsed.contact || {},
+                personalInfo: parsed.personalInfo || {},
                 skills: parsed.skills || [],
                 education: parsed.education || [],
                 experience: parsed.experience || [],
                 certifications: parsed.certifications || [],
                 summary: parsed.summary || '',
                 languages: parsed.languages || [],
+                references: parsed.references || [],
                 improvementSuggestions: parsed.improvementSuggestions || []
             };
         } catch (error) {
@@ -482,6 +512,133 @@ Extract as much information as possible from EVERY section of the resume. For an
             name: possibleName || null,
             location: location
         };
+    }
+
+    extractPersonalInfo(text) {
+        const personalInfo = {};
+        
+        // Date of birth patterns
+        const dobPatterns = [
+            /(?:date\s*of\s*birth|d\.?o\.?b\.?|born|birth\s*date)[:\s]*(\d{1,2}[\s/.-]+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{1,2})[\s/.-]+\d{2,4})/gi,
+            /(?:date\s*of\s*birth|d\.?o\.?b\.?|born|birth\s*date)[:\s]*(\d{4}[\s/.-]\d{1,2}[\s/.-]\d{1,2})/gi,
+            /(?:date\s*of\s*birth|d\.?o\.?b\.?|born|birth\s*date)[:\s]*((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2},?\s*\d{4})/gi
+        ];
+        for (const pattern of dobPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.dateOfBirth = match[1] || match[0].replace(/^(?:date\s*of\s*birth|d\.?o\.?b\.?|born|birth\s*date)[:\s]*/i, '').trim();
+                break;
+            }
+        }
+        
+        // Nationality/Citizenship
+        const nationalityPatterns = [
+            /(?:nationality|citizenship|citizen)[:\s]+([A-Za-zÀ-ÿ\s]+?)(?:\n|,|;|\||$)/gi,
+            /(?:national\s*id|passport)[:\s]+([A-Za-z]+)/gi
+        ];
+        for (const pattern of nationalityPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                const val = match[0].replace(/^(?:nationality|citizenship|citizen|national\s*id|passport)[:\s]+/i, '').trim();
+                if (val.length > 1 && val.length < 50) {
+                    personalInfo.nationality = val.split(/[,;\n|]/)[0].trim();
+                    break;
+                }
+            }
+        }
+        
+        // Gender
+        const genderPatterns = [
+            /(?:gender|sex)[:\s]+(male|female|non[- ]binary|other|prefer not to say)/gi
+        ];
+        for (const pattern of genderPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.gender = match[0].replace(/^(?:gender|sex)[:\s]+/i, '').trim();
+                break;
+            }
+        }
+        
+        // Marital Status
+        const maritalPatterns = [
+            /(?:marital\s*status|civil\s*status)[:\s]+(single|married|divorced|widowed|separated|domestic\s*partner)/gi
+        ];
+        for (const pattern of maritalPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.maritalStatus = match[0].replace(/^(?:marital\s*status|civil\s*status)[:\s]+/i, '').trim();
+                break;
+            }
+        }
+        
+        // Full Address (more detailed than contact location)
+        const addressPatterns = [
+            /(?:address|residence|home\s*address)[:\s]+(.+?)(?:\n\n|\n(?=[A-Z][a-z]+:)|$)/gis
+        ];
+        for (const pattern of addressPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                const addr = match[1] || match[0].replace(/^(?:address|residence|home\s*address)[:\s]+/i, '');
+                if (addr.trim().length > 3 && addr.trim().length < 200) {
+                    personalInfo.address = addr.trim().replace(/\n+/g, ', ');
+                    break;
+                }
+            }
+        }
+        
+        // Website / Portfolio
+        const websitePatterns = [
+            /(?:website|portfolio|personal\s*site|blog|web)[:\s]*(https?:\/\/[^\s,]+)/gi,
+            /(?:website|portfolio|personal\s*site|blog|web)[:\s]*(www\.[^\s,]+)/gi
+        ];
+        for (const pattern of websitePatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.website = match[0].replace(/^(?:website|portfolio|personal\s*site|blog|web)[:\s]*/i, '').trim();
+                break;
+            }
+        }
+        
+        // GitHub
+        const githubPatterns = [
+            /(?:github)[:\s]*(https?:\/\/github\.com\/[^\s,]+)/gi,
+            /github\.com\/([A-Za-z0-9_-]+)/gi
+        ];
+        for (const pattern of githubPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.github = match[0].trim();
+                break;
+            }
+        }
+        
+        // Visa / Work Authorization
+        const visaPatterns = [
+            /(?:visa\s*status|work\s*(?:authorization|permit|visa)|immigration\s*status|right\s*to\s*work|authorized\s*to\s*work)[:\s]+(.+?)(?:\n|,|;|$)/gi,
+            /(?:authorized\s*to\s*work\s*in\s*)([A-Za-z\s]+)/gi,
+            /((?:h-?1b|green\s*card|permanent\s*resident|citizen|work\s*permit|employment\s*authorization)(?:\s+(?:holder|status|visa))?)/gi
+        ];
+        for (const pattern of visaPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.visaStatus = match[0].replace(/^(?:visa\s*status|work\s*(?:authorization|permit|visa)|immigration\s*status|right\s*to\s*work|authorized\s*to\s*work)[:\s]+/i, '').trim();
+                break;
+            }
+        }
+        
+        // Driving License
+        const licensePatterns = [
+            /(?:driv(?:ing|er'?s?)\s*licen[sc]e|driver'?s?\s*permit)[:\s]+([A-Za-z0-9\s,]+?)(?:\n|;|$)/gi
+        ];
+        for (const pattern of licensePatterns) {
+            const match = text.match(pattern);
+            if (match) {
+                personalInfo.drivingLicense = match[0].replace(/^(?:driv(?:ing|er'?s?)\s*licen[sc]e|driver'?s?\s*permit)[:\s]+/i, '').trim();
+                break;
+            }
+        }
+        
+        return personalInfo;
     }
 
     extractSkills(text) {
@@ -767,6 +924,83 @@ Extract as much information as possible from EVERY section of the resume. For an
         });
 
         return languages;
+    }
+
+    extractReferences(text) {
+        const references = [];
+        const refSection = this.extractSection(text, ['reference', 'references']);
+        
+        // Check if "available upon request" or similar
+        const uponRequestPatterns = [
+            /references?\s*(?:are\s*)?(?:available\s*)?(?:upon|on)\s*request/i,
+            /available\s*upon\s*request/i,
+            /provided\s*upon\s*request/i,
+            /furnished\s*upon\s*request/i
+        ];
+
+        for (const pattern of uponRequestPatterns) {
+            if (pattern.test(text) || pattern.test(refSection)) {
+                return [{ note: 'Available upon request' }];
+            }
+        }
+
+        // Try to extract actual references
+        // References often follow a format like:
+        // Name
+        // Title, Company
+        // Email/Phone
+        const lines = refSection.split(/\n+/).filter(l => l.trim());
+        let currentRef = {};
+        
+        for (const line of lines) {
+            const trimmed = line.trim();
+            
+            // Skip header lines
+            if (/^reference/i.test(trimmed)) continue;
+            
+            // Check for email
+            const emailMatch = trimmed.match(/[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/);
+            if (emailMatch) {
+                currentRef.email = emailMatch[0];
+                continue;
+            }
+            
+            // Check for phone
+            const phoneMatch = trimmed.match(/(?:\+?\d{1,4}[-.\s]?)?(?:\(?\d{1,5}\)?[-.\s]?)?\d{1,5}[-.\s]?\d{1,5}[-.\s]?\d{1,5}/);
+            if (phoneMatch && phoneMatch[0].replace(/\D/g, '').length >= 7) {
+                currentRef.phone = phoneMatch[0];
+                continue;
+            }
+            
+            // Check for name (usually first line of a reference)
+            if (!currentRef.name && /^[A-Za-zÀ-ÿ\s'-]+$/.test(trimmed) && trimmed.length < 50) {
+                // Save previous reference if exists
+                if (Object.keys(currentRef).length > 0 && currentRef.name) {
+                    references.push(currentRef);
+                }
+                currentRef = { name: trimmed };
+                continue;
+            }
+            
+            // Check for title/company
+            if (currentRef.name && !currentRef.title) {
+                // Could be "Title, Company" or "Title at Company"
+                const titleMatch = trimmed.match(/^(.+?)(?:,\s*|\s+at\s+|\s+-\s+)(.+)$/);
+                if (titleMatch) {
+                    currentRef.title = titleMatch[1].trim();
+                    currentRef.company = titleMatch[2].trim();
+                } else if (trimmed.length < 100) {
+                    currentRef.title = trimmed;
+                }
+            }
+        }
+        
+        // Don't forget last reference
+        if (Object.keys(currentRef).length > 0 && currentRef.name) {
+            references.push(currentRef);
+        }
+        
+        return references;
     }
 
     extractSummary(text) {

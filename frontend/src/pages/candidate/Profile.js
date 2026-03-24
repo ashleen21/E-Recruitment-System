@@ -20,15 +20,20 @@ import {
   EnvelopeIcon,
   PhoneIcon,
   SparklesIcon,
+  UsersIcon,
+  MapPinIcon,
+  CheckCircleIcon,
 } from '@heroicons/react/24/outline';
 import { candidatesAPI, resumeAPI, authAPI } from '../../services/api';
 
 const CandidateProfile = () => {
   const [editingSection, setEditingSection] = useState(null);
   const [previewResume, setPreviewResume] = useState(null);
-  const [previewTab, setPreviewTab] = useState('preview'); // 'preview' or 'parsed'
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [passwordData, setPasswordData] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [editMode, setEditMode] = useState(false);
+  const [editedData, setEditedData] = useState({});
+  const [newSkill, setNewSkill] = useState('');
   const photoInputRef = useRef(null);
   const queryClient = useQueryClient();
 
@@ -81,6 +86,39 @@ const CandidateProfile = () => {
     },
     onError: () => toast.error('Failed to reparse resume'),
   });
+
+  const saveParsedDataMutation = useMutation({
+    mutationFn: ({ id, data }) => resumeAPI.updateParsedData(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['candidate-resumes']);
+      setEditMode(false);
+      toast.success('Parsed data saved successfully');
+    },
+    onError: () => toast.error('Failed to save parsed data'),
+  });
+
+  const startEditing = (resume) => {
+    setEditedData({
+      extracted_contact: resume.extracted_contact ? { ...resume.extracted_contact } : {},
+      extracted_personal_info: resume.extracted_personal_info ? { ...resume.extracted_personal_info } : {},
+      extracted_summary: resume.extracted_summary || '',
+      extracted_skills: resume.extracted_skills ? [...resume.extracted_skills] : [],
+      extracted_experience: Array.isArray(resume.extracted_experience)
+        ? resume.extracted_experience.map(e => ({ ...e }))
+        : resume.extracted_experience?.positions
+          ? resume.extracted_experience.positions.map(e => ({ ...e }))
+          : [],
+      extracted_education: resume.extracted_education ? resume.extracted_education.map(e => ({ ...e })) : [],
+      extracted_certifications: resume.extracted_certifications ? [...resume.extracted_certifications] : [],
+      extracted_references: resume.extracted_references ? resume.extracted_references.map(r => ({ ...r })) : [],
+    });
+    setEditMode(true);
+  };
+
+  const handleSaveParsedData = () => {
+    if (!previewResume) return;
+    saveParsedDataMutation.mutate({ id: previewResume.id, data: editedData });
+  };
 
   const uploadPhotoMutation = useMutation({
     mutationFn: (file) => candidatesAPI.uploadPhoto(file),
@@ -418,65 +456,14 @@ const CandidateProfile = () => {
                 )}
               </div>
               <button
-                onClick={() => { setPreviewResume(null); setPreviewTab('preview'); }}
+                onClick={() => { setPreviewResume(null); setEditMode(false); }}
                 className="text-gray-500 hover:text-gray-700"
               >
                 <XMarkIcon className="h-6 w-6" />
               </button>
             </div>
-            
-            {/* Tabs */}
-            <div className="flex border-b">
-              <button
-                onClick={() => setPreviewTab('preview')}
-                className={`px-6 py-3 text-sm font-medium ${
-                  previewTab === 'preview'
-                    ? 'text-primary-600 border-b-2 border-primary-600'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <DocumentIcon className="h-4 w-4 inline mr-2" />
-                Document Preview
-              </button>
-              <button
-                onClick={() => setPreviewTab('parsed')}
-                className={`px-6 py-3 text-sm font-medium ${
-                  previewTab === 'parsed'
-                    ? 'text-primary-600 border-b-2 border-primary-600'
-                    : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                <SparklesIcon className="h-4 w-4 inline mr-2" />
-                Parsed Content
-              </button>
-            </div>
 
             <div className="flex-1 overflow-auto">
-              {previewTab === 'preview' ? (
-                /* Document Preview Tab */
-                <div className="h-full p-4">
-                  {previewResume.file_type === 'application/pdf' ? (
-                    <iframe
-                      src={`http://localhost:5000${previewResume.file_path || `/uploads/resumes/${previewResume.id}`}`}
-                      className="w-full h-full border-0 rounded"
-                      title="Resume Preview"
-                    />
-                  ) : (
-                    <div className="text-center py-8">
-                      <DocumentIcon className="h-16 w-16 mx-auto text-gray-400 mb-4" />
-                      <p className="text-gray-600 mb-4">Preview not available for this file type.</p>
-                      <a
-                        href={`http://localhost:5000${previewResume.file_path || `/uploads/resumes/${previewResume.id}`}`}
-                        download={previewResume.file_name}
-                        className="btn-primary"
-                      >
-                        Download Resume
-                      </a>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                /* Parsed Content Tab */
                 <div className="p-6 space-y-6">
                   {previewResume.status === 'processing' ? (
                     <div className="text-center py-12">
@@ -498,155 +485,335 @@ const CandidateProfile = () => {
                     </div>
                   ) : (
                     <>
+                      {/* HR View Info Banner */}
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                        <p className="text-sm text-blue-800">
+                          <SparklesIcon className="h-4 w-4 inline mr-1" />
+                          This is the parsed content from your resume that HR will use for evaluating applications. Make sure all information is accurate.
+                        </p>
+                      </div>
+
                       {/* Contact Information */}
-                      {previewResume.extracted_contact && (
+                      {(editMode ? editedData.extracted_contact : previewResume.extracted_contact) && (
                         <div className="bg-gray-50 rounded-lg p-4">
                           <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
                             <UserCircleIcon className="h-5 w-5 mr-2 text-primary-600" />
                             Contact Information
                           </h4>
-                          <div className="grid grid-cols-2 gap-4 text-sm">
-                            {previewResume.extracted_contact.name && (
+                          {editMode ? (
+                            <div className="grid grid-cols-2 gap-4 text-sm">
                               <div>
-                                <span className="text-gray-500">Name:</span>
-                                <span className="ml-2 text-gray-900">{previewResume.extracted_contact.name}</span>
+                                <label className="text-gray-500 block mb-1">Name</label>
+                                <input className="input-field" value={editedData.extracted_contact.name || ''} onChange={(e) => setEditedData({...editedData, extracted_contact: {...editedData.extracted_contact, name: e.target.value}})} />
                               </div>
-                            )}
-                            {previewResume.extracted_contact.email && (
-                              <div className="flex items-center">
-                                <EnvelopeIcon className="h-4 w-4 text-gray-400 mr-2" />
-                                <span className="text-gray-900">{previewResume.extracted_contact.email}</span>
-                              </div>
-                            )}
-                            {previewResume.extracted_contact.phone && (
-                              <div className="flex items-center">
-                                <PhoneIcon className="h-4 w-4 text-gray-400 mr-2" />
-                                <span className="text-gray-900">{previewResume.extracted_contact.phone}</span>
-                              </div>
-                            )}
-                            {previewResume.extracted_contact.linkedin && (
                               <div>
-                                <span className="text-gray-500">LinkedIn:</span>
-                                <a href={`https://${previewResume.extracted_contact.linkedin}`} 
-                                   target="_blank" rel="noopener noreferrer"
-                                   className="ml-2 text-primary-600 hover:underline">
-                                  {previewResume.extracted_contact.linkedin}
-                                </a>
+                                <label className="text-gray-500 block mb-1">Email</label>
+                                <input className="input-field" value={editedData.extracted_contact.email || ''} onChange={(e) => setEditedData({...editedData, extracted_contact: {...editedData.extracted_contact, email: e.target.value}})} />
                               </div>
-                            )}
-                          </div>
+                              <div>
+                                <label className="text-gray-500 block mb-1">Phone</label>
+                                <input className="input-field" value={editedData.extracted_contact.phone || ''} onChange={(e) => setEditedData({...editedData, extracted_contact: {...editedData.extracted_contact, phone: e.target.value}})} />
+                              </div>
+                              <div>
+                                <label className="text-gray-500 block mb-1">Location</label>
+                                <input className="input-field" value={editedData.extracted_contact.location || ''} onChange={(e) => setEditedData({...editedData, extracted_contact: {...editedData.extracted_contact, location: e.target.value}})} />
+                              </div>
+                              <div>
+                                <label className="text-gray-500 block mb-1">LinkedIn</label>
+                                <input className="input-field" value={editedData.extracted_contact.linkedin || ''} onChange={(e) => setEditedData({...editedData, extracted_contact: {...editedData.extracted_contact, linkedin: e.target.value}})} />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              {previewResume.extracted_contact.name && (
+                                <div>
+                                  <span className="text-gray-500">Name:</span>
+                                  <span className="ml-2 text-gray-900 font-medium">{previewResume.extracted_contact.name}</span>
+                                </div>
+                              )}
+                              {previewResume.extracted_contact.email && (
+                                <div className="flex items-center">
+                                  <EnvelopeIcon className="h-4 w-4 text-gray-400 mr-2" />
+                                  <span className="text-gray-900">{previewResume.extracted_contact.email}</span>
+                                </div>
+                              )}
+                              {previewResume.extracted_contact.phone && (
+                                <div className="flex items-center">
+                                  <PhoneIcon className="h-4 w-4 text-gray-400 mr-2" />
+                                  <span className="text-gray-900">{previewResume.extracted_contact.phone}</span>
+                                </div>
+                              )}
+                              {previewResume.extracted_contact.location && (
+                                <div className="flex items-center">
+                                  <MapPinIcon className="h-4 w-4 text-gray-400 mr-2" />
+                                  <span className="text-gray-900">{previewResume.extracted_contact.location}</span>
+                                </div>
+                              )}
+                              {previewResume.extracted_contact.linkedin && (
+                                <div>
+                                  <span className="text-gray-500">LinkedIn:</span>
+                                  <a href={`https://${previewResume.extracted_contact.linkedin}`} 
+                                     target="_blank" rel="noopener noreferrer"
+                                     className="ml-2 text-primary-600 hover:underline">
+                                    {previewResume.extracted_contact.linkedin}
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Personal Information */}
+                      {(editMode || (previewResume.extracted_personal_info && Object.keys(previewResume.extracted_personal_info).length > 0)) && (
+                        <div className="bg-gray-50 rounded-lg p-4">
+                          <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
+                            <UserCircleIcon className="h-5 w-5 mr-2 text-primary-600" />
+                            Personal Information
+                          </h4>
+                          {editMode ? (
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div><label className="text-gray-500 block mb-1">Date of Birth</label><input className="input-field" value={editedData.extracted_personal_info?.dateOfBirth || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, dateOfBirth: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">Nationality</label><input className="input-field" value={editedData.extracted_personal_info?.nationality || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, nationality: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">Gender</label><input className="input-field" value={editedData.extracted_personal_info?.gender || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, gender: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">Marital Status</label><input className="input-field" value={editedData.extracted_personal_info?.maritalStatus || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, maritalStatus: e.target.value}})} /></div>
+                              <div className="col-span-2"><label className="text-gray-500 block mb-1">Address</label><input className="input-field" value={editedData.extracted_personal_info?.address || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, address: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">Website</label><input className="input-field" value={editedData.extracted_personal_info?.website || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, website: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">GitHub</label><input className="input-field" value={editedData.extracted_personal_info?.github || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, github: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">Visa/Work Authorization</label><input className="input-field" value={editedData.extracted_personal_info?.visaStatus || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, visaStatus: e.target.value}})} /></div>
+                              <div><label className="text-gray-500 block mb-1">Driving License</label><input className="input-field" value={editedData.extracted_personal_info?.drivingLicense || ''} onChange={(e) => setEditedData({...editedData, extracted_personal_info: {...editedData.extracted_personal_info, drivingLicense: e.target.value}})} /></div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              {previewResume.extracted_personal_info.dateOfBirth && (<div><span className="text-gray-500">Date of Birth:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.dateOfBirth}</span></div>)}
+                              {previewResume.extracted_personal_info.nationality && (<div><span className="text-gray-500">Nationality:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.nationality}</span></div>)}
+                              {previewResume.extracted_personal_info.gender && (<div><span className="text-gray-500">Gender:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.gender}</span></div>)}
+                              {previewResume.extracted_personal_info.maritalStatus && (<div><span className="text-gray-500">Marital Status:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.maritalStatus}</span></div>)}
+                              {previewResume.extracted_personal_info.address && (<div className="col-span-2"><span className="text-gray-500">Address:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.address}</span></div>)}
+                              {previewResume.extracted_personal_info.website && (<div><span className="text-gray-500">Website:</span><a href={previewResume.extracted_personal_info.website.startsWith('http') ? previewResume.extracted_personal_info.website : `https://${previewResume.extracted_personal_info.website}`} target="_blank" rel="noopener noreferrer" className="ml-2 text-primary-600 hover:underline">{previewResume.extracted_personal_info.website}</a></div>)}
+                              {previewResume.extracted_personal_info.github && (<div><span className="text-gray-500">GitHub:</span><a href={previewResume.extracted_personal_info.github.startsWith('http') ? previewResume.extracted_personal_info.github : `https://${previewResume.extracted_personal_info.github}`} target="_blank" rel="noopener noreferrer" className="ml-2 text-primary-600 hover:underline">{previewResume.extracted_personal_info.github}</a></div>)}
+                              {previewResume.extracted_personal_info.visaStatus && (<div><span className="text-gray-500">Visa/Work Authorization:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.visaStatus}</span></div>)}
+                              {previewResume.extracted_personal_info.drivingLicense && (<div><span className="text-gray-500">Driving License:</span><span className="ml-2 text-gray-900">{previewResume.extracted_personal_info.drivingLicense}</span></div>)}
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {/* Summary */}
-                      {previewResume.extracted_summary && (
+                      {(editMode || previewResume.extracted_summary) && (
                         <div className="bg-gray-50 rounded-lg p-4">
                           <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
                             <DocumentTextIcon className="h-5 w-5 mr-2 text-primary-600" />
                             Summary
                           </h4>
-                          <p className="text-gray-700 text-sm whitespace-pre-wrap">{previewResume.extracted_summary}</p>
+                          {editMode ? (
+                            <textarea className="input-field w-full" rows={4} value={editedData.extracted_summary || ''} onChange={(e) => setEditedData({...editedData, extracted_summary: e.target.value})} />
+                          ) : (
+                            <p className="text-gray-700 text-sm whitespace-pre-wrap">{previewResume.extracted_summary}</p>
+                          )}
                         </div>
                       )}
 
                       {/* Skills */}
-                      {previewResume.extracted_skills && previewResume.extracted_skills.length > 0 && (
+                      {(editMode || (previewResume.extracted_skills && previewResume.extracted_skills.length > 0)) && (
                         <div className="bg-gray-50 rounded-lg p-4">
                           <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
                             <SparklesIcon className="h-5 w-5 mr-2 text-primary-600" />
-                            Skills ({previewResume.extracted_skills.length})
+                            Skills ({(editMode ? editedData.extracted_skills : previewResume.extracted_skills)?.length || 0})
                           </h4>
-                          <div className="flex flex-wrap gap-2">
-                            {previewResume.extracted_skills.map((skill, idx) => (
-                              <span
-                                key={idx}
-                                className="px-3 py-1 bg-primary-100 text-primary-800 rounded-full text-sm"
-                              >
-                                {typeof skill === 'string' ? skill : skill.name || skill}
-                              </span>
-                            ))}
-                          </div>
+                          {editMode ? (
+                            <div>
+                              <div className="flex flex-wrap gap-2 mb-3">
+                                {editedData.extracted_skills.map((skill, idx) => (
+                                  <span key={idx} className="px-3 py-1 bg-primary-100 text-primary-800 rounded-full text-sm flex items-center gap-1">
+                                    {typeof skill === 'string' ? skill : skill.name || skill}
+                                    <button onClick={() => { const updated = [...editedData.extracted_skills]; updated.splice(idx, 1); setEditedData({...editedData, extracted_skills: updated}); }} className="text-primary-600 hover:text-red-600 ml-1">&times;</button>
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="flex gap-2">
+                                <input className="input-field flex-1" placeholder="Add a skill..." value={newSkill} onChange={(e) => setNewSkill(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newSkill.trim()) { e.preventDefault(); setEditedData({...editedData, extracted_skills: [...editedData.extracted_skills, newSkill.trim()]}); setNewSkill(''); }}} />
+                                <button type="button" className="btn-primary text-sm" onClick={() => { if (newSkill.trim()) { setEditedData({...editedData, extracted_skills: [...editedData.extracted_skills, newSkill.trim()]}); setNewSkill(''); }}}>Add</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              {previewResume.extracted_skills.map((skill, idx) => (
+                                <span key={idx} className="px-3 py-1 bg-primary-100 text-primary-800 rounded-full text-sm">
+                                  {typeof skill === 'string' ? skill : skill.name || skill}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {/* Experience */}
-                      {previewResume.extracted_experience && (
+                      {(editMode || previewResume.extracted_experience) && (
                         <div className="bg-gray-50 rounded-lg p-4">
                           <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
                             <BriefcaseIcon className="h-5 w-5 mr-2 text-primary-600" />
                             Work Experience
-                            {previewResume.extracted_experience.totalYears && (
-                              <span className="ml-2 text-sm text-gray-500">
-                                ({previewResume.extracted_experience.totalYears} years)
-                              </span>
-                            )}
                           </h4>
-                          {previewResume.extracted_experience.positions?.length > 0 ? (
+                          {editMode ? (
                             <div className="space-y-4">
-                              {previewResume.extracted_experience.positions.map((exp, idx) => (
-                                <div key={idx} className="border-l-2 border-primary-200 pl-4">
-                                  <p className="font-medium text-gray-900">{exp.title}</p>
-                                  <p className="text-primary-600">{exp.company}</p>
-                                  {(exp.startDate || exp.endDate) && (
-                                    <p className="text-sm text-gray-500">
-                                      {exp.startDate} - {exp.endDate || 'Present'}
-                                    </p>
-                                  )}
-                                  {exp.description && (
-                                    <p className="text-sm text-gray-600 mt-1">{exp.description}</p>
-                                  )}
+                              {editedData.extracted_experience.map((exp, idx) => (
+                                <div key={idx} className="border-l-2 border-primary-200 pl-4 space-y-2">
+                                  <div className="flex justify-between">
+                                    <div className="grid grid-cols-2 gap-2 flex-1">
+                                      <input className="input-field" placeholder="Job Title" value={exp.title || ''} onChange={(e) => { const updated = [...editedData.extracted_experience]; updated[idx] = {...updated[idx], title: e.target.value}; setEditedData({...editedData, extracted_experience: updated}); }} />
+                                      <input className="input-field" placeholder="Company" value={exp.company || ''} onChange={(e) => { const updated = [...editedData.extracted_experience]; updated[idx] = {...updated[idx], company: e.target.value}; setEditedData({...editedData, extracted_experience: updated}); }} />
+                                      <input className="input-field" placeholder="Start Date" value={exp.startDate || ''} onChange={(e) => { const updated = [...editedData.extracted_experience]; updated[idx] = {...updated[idx], startDate: e.target.value}; setEditedData({...editedData, extracted_experience: updated}); }} />
+                                      <input className="input-field" placeholder="End Date" value={exp.endDate || ''} onChange={(e) => { const updated = [...editedData.extracted_experience]; updated[idx] = {...updated[idx], endDate: e.target.value}; setEditedData({...editedData, extracted_experience: updated}); }} />
+                                    </div>
+                                    <button onClick={() => { const updated = [...editedData.extracted_experience]; updated.splice(idx, 1); setEditedData({...editedData, extracted_experience: updated}); }} className="text-red-500 hover:text-red-700 ml-2"><TrashIcon className="h-4 w-4" /></button>
+                                  </div>
+                                  <textarea className="input-field w-full" rows={2} placeholder="Description" value={exp.description || ''} onChange={(e) => { const updated = [...editedData.extracted_experience]; updated[idx] = {...updated[idx], description: e.target.value}; setEditedData({...editedData, extracted_experience: updated}); }} />
                                 </div>
                               ))}
+                              <button type="button" className="text-primary-600 hover:text-primary-700 text-sm font-medium" onClick={() => setEditedData({...editedData, extracted_experience: [...editedData.extracted_experience, { title: '', company: '', startDate: '', endDate: '', description: '' }]})}>+ Add Experience</button>
                             </div>
                           ) : (
-                            <p className="text-sm text-gray-500">No experience data extracted</p>
+                            <>
+                              {(Array.isArray(previewResume.extracted_experience) ? previewResume.extracted_experience : previewResume.extracted_experience?.positions || []).length > 0 ? (
+                                <div className="space-y-4">
+                                  {(Array.isArray(previewResume.extracted_experience) ? previewResume.extracted_experience : previewResume.extracted_experience.positions).map((exp, idx) => (
+                                    <div key={idx} className="border-l-2 border-primary-200 pl-4">
+                                      <p className="font-medium text-gray-900">{exp.title}</p>
+                                      <p className="text-primary-600">{exp.company}</p>
+                                      {(exp.startDate || exp.endDate) && (<p className="text-sm text-gray-500">{exp.startDate} - {exp.endDate || 'Present'}</p>)}
+                                      {exp.description && (<p className="text-sm text-gray-600 mt-1">{exp.description}</p>)}
+                                      {exp.highlights && exp.highlights.length > 0 && (<ul className="text-sm text-gray-600 mt-1 list-disc list-inside">{exp.highlights.map((h, i) => <li key={i}>{h}</li>)}</ul>)}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-sm text-gray-500">No experience data extracted</p>
+                              )}
+                            </>
                           )}
                         </div>
                       )}
 
                       {/* Education */}
-                      {previewResume.extracted_education && previewResume.extracted_education.length > 0 && (
+                      {(editMode || (previewResume.extracted_education && previewResume.extracted_education.length > 0)) && (
                         <div className="bg-gray-50 rounded-lg p-4">
                           <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
                             <AcademicCapIcon className="h-5 w-5 mr-2 text-primary-600" />
                             Education
                           </h4>
-                          <div className="space-y-3">
-                            {previewResume.extracted_education.map((edu, idx) => (
-                              <div key={idx} className="border-l-2 border-primary-200 pl-4">
-                                <p className="font-medium text-gray-900">
-                                  {edu.degree} {edu.field && `in ${edu.field}`}
-                                </p>
-                                <p className="text-primary-600">{edu.institution}</p>
-                                {edu.year && <p className="text-sm text-gray-500">{edu.year}</p>}
-                              </div>
-                            ))}
-                          </div>
+                          {editMode ? (
+                            <div className="space-y-4">
+                              {editedData.extracted_education.map((edu, idx) => (
+                                <div key={idx} className="border-l-2 border-primary-200 pl-4">
+                                  <div className="flex justify-between">
+                                    <div className="grid grid-cols-2 gap-2 flex-1">
+                                      <input className="input-field" placeholder="Degree" value={edu.degree || ''} onChange={(e) => { const updated = [...editedData.extracted_education]; updated[idx] = {...updated[idx], degree: e.target.value}; setEditedData({...editedData, extracted_education: updated}); }} />
+                                      <input className="input-field" placeholder="Field of Study" value={edu.field || ''} onChange={(e) => { const updated = [...editedData.extracted_education]; updated[idx] = {...updated[idx], field: e.target.value}; setEditedData({...editedData, extracted_education: updated}); }} />
+                                      <input className="input-field" placeholder="Institution" value={edu.institution || ''} onChange={(e) => { const updated = [...editedData.extracted_education]; updated[idx] = {...updated[idx], institution: e.target.value}; setEditedData({...editedData, extracted_education: updated}); }} />
+                                      <input className="input-field" placeholder="Year" value={edu.year || ''} onChange={(e) => { const updated = [...editedData.extracted_education]; updated[idx] = {...updated[idx], year: e.target.value}; setEditedData({...editedData, extracted_education: updated}); }} />
+                                    </div>
+                                    <button onClick={() => { const updated = [...editedData.extracted_education]; updated.splice(idx, 1); setEditedData({...editedData, extracted_education: updated}); }} className="text-red-500 hover:text-red-700 ml-2"><TrashIcon className="h-4 w-4" /></button>
+                                  </div>
+                                </div>
+                              ))}
+                              <button type="button" className="text-primary-600 hover:text-primary-700 text-sm font-medium" onClick={() => setEditedData({...editedData, extracted_education: [...editedData.extracted_education, { degree: '', field: '', institution: '', year: '' }]})}>+ Add Education</button>
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              {previewResume.extracted_education.map((edu, idx) => (
+                                <div key={idx} className="border-l-2 border-primary-200 pl-4">
+                                  <p className="font-medium text-gray-900">{edu.degree} {edu.field && `in ${edu.field}`}</p>
+                                  <p className="text-primary-600">{edu.institution}</p>
+                                  {edu.year && <p className="text-sm text-gray-500">{edu.year}</p>}
+                                  {edu.gpa && <p className="text-sm text-gray-500">GPA: {edu.gpa}</p>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
 
                       {/* Certifications */}
-                      {previewResume.extracted_certifications && previewResume.extracted_certifications.length > 0 && (
+                      {(editMode || (previewResume.extracted_certifications && previewResume.extracted_certifications.length > 0)) && (
                         <div className="bg-gray-50 rounded-lg p-4">
-                          <h4 className="font-semibold text-gray-900 mb-3">Certifications</h4>
-                          <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                            {previewResume.extracted_certifications.map((cert, idx) => (
-                              <li key={idx}>{typeof cert === 'string' ? cert : cert.name}</li>
-                            ))}
-                          </ul>
+                          <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
+                            <CheckCircleIcon className="h-5 w-5 mr-2 text-primary-600" />
+                            Certifications
+                          </h4>
+                          {editMode ? (
+                            <div className="space-y-2">
+                              {editedData.extracted_certifications.map((cert, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <input className="input-field flex-1" value={typeof cert === 'string' ? cert : cert.name || ''} onChange={(e) => { const updated = [...editedData.extracted_certifications]; updated[idx] = e.target.value; setEditedData({...editedData, extracted_certifications: updated}); }} />
+                                  <button onClick={() => { const updated = [...editedData.extracted_certifications]; updated.splice(idx, 1); setEditedData({...editedData, extracted_certifications: updated}); }} className="text-red-500 hover:text-red-700"><TrashIcon className="h-4 w-4" /></button>
+                                </div>
+                              ))}
+                              <button type="button" className="text-primary-600 hover:text-primary-700 text-sm font-medium" onClick={() => setEditedData({...editedData, extracted_certifications: [...editedData.extracted_certifications, '']})}>+ Add Certification</button>
+                            </div>
+                          ) : (
+                            <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                              {previewResume.extracted_certifications.map((cert, idx) => (
+                                <li key={idx}>
+                                  {typeof cert === 'string' ? cert : cert.name}
+                                  {cert.issuer && <span className="text-gray-500"> - {cert.issuer}</span>}
+                                  {cert.date && <span className="text-gray-500"> ({cert.date})</span>}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
                       )}
 
-                      {/* Raw Text (collapsible) */}
-                      {previewResume.raw_text && (
-                        <details className="bg-gray-50 rounded-lg p-4">
-                          <summary className="font-semibold text-gray-900 cursor-pointer">
-                            Raw Extracted Text
-                          </summary>
-                          <pre className="mt-3 text-xs text-gray-600 whitespace-pre-wrap overflow-x-auto max-h-60">
-                            {previewResume.raw_text}
-                          </pre>
-                        </details>
+                      {/* References */}
+                      {(editMode || (previewResume.extracted_references && previewResume.extracted_references.length > 0)) && (
+                        <div className="bg-gray-50 rounded-lg p-4">
+                          <h4 className="font-semibold text-gray-900 mb-3 flex items-center">
+                            <UsersIcon className="h-5 w-5 mr-2 text-primary-600" />
+                            References
+                          </h4>
+                          {editMode ? (
+                            <div className="space-y-4">
+                              {editedData.extracted_references.map((ref, idx) => (
+                                <div key={idx} className="border-l-2 border-primary-200 pl-4">
+                                  <div className="flex justify-between">
+                                    <div className="grid grid-cols-2 gap-2 flex-1">
+                                      <input className="input-field" placeholder="Name" value={ref.name || ''} onChange={(e) => { const updated = [...editedData.extracted_references]; updated[idx] = {...updated[idx], name: e.target.value}; setEditedData({...editedData, extracted_references: updated}); }} />
+                                      <input className="input-field" placeholder="Title" value={ref.title || ''} onChange={(e) => { const updated = [...editedData.extracted_references]; updated[idx] = {...updated[idx], title: e.target.value}; setEditedData({...editedData, extracted_references: updated}); }} />
+                                      <input className="input-field" placeholder="Company" value={ref.company || ''} onChange={(e) => { const updated = [...editedData.extracted_references]; updated[idx] = {...updated[idx], company: e.target.value}; setEditedData({...editedData, extracted_references: updated}); }} />
+                                      <input className="input-field" placeholder="Relationship" value={ref.relationship || ''} onChange={(e) => { const updated = [...editedData.extracted_references]; updated[idx] = {...updated[idx], relationship: e.target.value}; setEditedData({...editedData, extracted_references: updated}); }} />
+                                      <input className="input-field" placeholder="Email" value={ref.email || ''} onChange={(e) => { const updated = [...editedData.extracted_references]; updated[idx] = {...updated[idx], email: e.target.value}; setEditedData({...editedData, extracted_references: updated}); }} />
+                                      <input className="input-field" placeholder="Phone" value={ref.phone || ''} onChange={(e) => { const updated = [...editedData.extracted_references]; updated[idx] = {...updated[idx], phone: e.target.value}; setEditedData({...editedData, extracted_references: updated}); }} />
+                                    </div>
+                                    <button onClick={() => { const updated = [...editedData.extracted_references]; updated.splice(idx, 1); setEditedData({...editedData, extracted_references: updated}); }} className="text-red-500 hover:text-red-700 ml-2"><TrashIcon className="h-4 w-4" /></button>
+                                  </div>
+                                </div>
+                              ))}
+                              <button type="button" className="text-primary-600 hover:text-primary-700 text-sm font-medium" onClick={() => setEditedData({...editedData, extracted_references: [...editedData.extracted_references, { name: '', title: '', company: '', relationship: '', email: '', phone: '' }]})}>+ Add Reference</button>
+                            </div>
+                          ) : (
+                            <>
+                              {previewResume.extracted_references[0]?.note ? (
+                                <p className="text-sm text-gray-600 italic">{previewResume.extracted_references[0].note}</p>
+                              ) : (
+                                <div className="space-y-3">
+                                  {previewResume.extracted_references.map((ref, idx) => (
+                                    <div key={idx} className="border-l-2 border-primary-200 pl-4">
+                                      <p className="font-medium text-gray-900">{ref.name}</p>
+                                      {ref.title && <p className="text-sm text-gray-600">{ref.title}</p>}
+                                      {ref.company && <p className="text-sm text-primary-600">{ref.company}</p>}
+                                      {ref.relationship && (<p className="text-xs text-gray-500">({ref.relationship})</p>)}
+                                      <div className="flex gap-4 mt-1 text-sm">
+                                        {ref.email && (<span className="flex items-center text-gray-600"><EnvelopeIcon className="h-3 w-3 mr-1" />{ref.email}</span>)}
+                                        {ref.phone && (<span className="flex items-center text-gray-600"><PhoneIcon className="h-3 w-3 mr-1" />{ref.phone}</span>)}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
                       )}
 
                       {/* No parsed data */}
@@ -668,28 +835,55 @@ const CandidateProfile = () => {
                     </>
                   )}
                 </div>
-              )}
             </div>
 
             <div className="p-4 border-t flex justify-between">
-              <button
-                onClick={() => reparseMutation.mutate(previewResume.id)}
-                disabled={reparseMutation.isPending}
-                className="btn-secondary flex items-center"
-              >
-                <ArrowPathIcon className={`h-4 w-4 mr-2 ${reparseMutation.isPending ? 'animate-spin' : ''}`} />
-                {reparseMutation.isPending ? 'Parsing...' : 'Re-parse Resume'}
-              </button>
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => reparseMutation.mutate(previewResume.id)}
+                  disabled={reparseMutation.isPending}
+                  className="btn-secondary flex items-center"
+                >
+                  <ArrowPathIcon className={`h-4 w-4 mr-2 ${reparseMutation.isPending ? 'animate-spin' : ''}`} />
+                  {reparseMutation.isPending ? 'Parsing...' : 'Re-parse Resume'}
+                </button>
+                {!editMode ? (
+                  <button
+                    onClick={() => startEditing(previewResume)}
+                    className="btn-secondary flex items-center"
+                  >
+                    <PencilIcon className="h-4 w-4 mr-2" />
+                    Edit
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleSaveParsedData}
+                      disabled={saveParsedDataMutation.isPending}
+                      className="btn-primary flex items-center"
+                    >
+                      {saveParsedDataMutation.isPending ? 'Saving...' : 'Save Changes'}
+                    </button>
+                    <button
+                      onClick={() => setEditMode(false)}
+                      className="btn-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </div>
               <div className="flex space-x-3">
                 <a
                   href={`http://localhost:5000${previewResume.file_path || `/uploads/resumes/${previewResume.id}`}`}
-                  download={previewResume.file_name}
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="btn-secondary"
                 >
                   Download
                 </a>
                 <button
-                  onClick={() => { setPreviewResume(null); setPreviewTab('preview'); }}
+                  onClick={() => { setPreviewResume(null); setEditMode(false); }}
                   className="btn-primary"
                 >
                   Close

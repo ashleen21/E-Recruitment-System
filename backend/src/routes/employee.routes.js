@@ -254,6 +254,7 @@ router.post('/profile/resume', authenticate, authorize('employee'), uploadResume
         let extractedSkills = [];
         let extractedEducation = [];
         let extractedExperience = [];
+        let extractedReferences = [];
         let rawText = '';
         let extractedInfo = null;
         let extractionConfidence = 1.0; // Default to 100% confidence
@@ -265,6 +266,7 @@ router.post('/profile/resume', authenticate, authorize('employee'), uploadResume
             extractedSkills = parseResult.skills || [];
             extractedEducation = parseResult.education || [];
             extractedExperience = parseResult.experience || [];
+            extractedReferences = parseResult.references || [];
             rawText = parseResult.rawText || parseResult.raw_text || '';
             // Get confidence score from parser (0-100) and convert to decimal (0-1)
             // OpenAI parsing should give high confidence
@@ -327,18 +329,23 @@ router.post('/profile/resume', authenticate, authorize('employee'), uploadResume
                     extracted_skills = $7,
                     extracted_education = $8,
                     extracted_experience = $9,
-                    extraction_confidence = $10,
+                    extracted_references = $10,
+                    extracted_contact = $11,
+                    extracted_summary = $12,
+                    extracted_certifications = $13,
+                    extracted_personal_info = $14,
+                    extraction_confidence = $15,
                     status = 'parsed',
                     parsed_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = $11
-            `, [req.file.originalname, resumeUrl, req.file.mimetype, req.file.size, rawText, JSON.stringify(parsedData), JSON.stringify(extractedSkills), JSON.stringify(extractedEducation), JSON.stringify(extractedExperience), extractionConfidence, existingResume.rows[0].id]);
+                WHERE id = $16
+            `, [req.file.originalname, resumeUrl, req.file.mimetype, req.file.size, rawText, JSON.stringify(parsedData), JSON.stringify(extractedSkills), JSON.stringify(extractedEducation), JSON.stringify(extractedExperience), JSON.stringify(extractedReferences), JSON.stringify(parsedData.contact || null), parsedData.summary || null, JSON.stringify(parsedData.certifications || []), JSON.stringify(parsedData.personalInfo || null), extractionConfidence, existingResume.rows[0].id]);
         } else {
             // Insert new resume
             await db.query(`
-                INSERT INTO resumes (employee_id, file_name, file_path, file_type, file_size, is_primary, status, raw_text, parsed_data, extracted_skills, extracted_education, extracted_experience, extraction_confidence, parsed_at)
-                VALUES ($1, $2, $3, $4, $5, true, 'parsed', $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
-            `, [employeeId, req.file.originalname, resumeUrl, req.file.mimetype, req.file.size, rawText, JSON.stringify(parsedData), JSON.stringify(extractedSkills), JSON.stringify(extractedEducation), JSON.stringify(extractedExperience), extractionConfidence]);
+                INSERT INTO resumes (employee_id, file_name, file_path, file_type, file_size, is_primary, status, raw_text, parsed_data, extracted_skills, extracted_education, extracted_experience, extracted_references, extracted_contact, extracted_summary, extracted_certifications, extracted_personal_info, extraction_confidence, parsed_at)
+                VALUES ($1, $2, $3, $4, $5, true, 'parsed', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
+            `, [employeeId, req.file.originalname, resumeUrl, req.file.mimetype, req.file.size, rawText, JSON.stringify(parsedData), JSON.stringify(extractedSkills), JSON.stringify(extractedEducation), JSON.stringify(extractedExperience), JSON.stringify(extractedReferences), JSON.stringify(parsedData.contact || null), parsedData.summary || null, JSON.stringify(parsedData.certifications || []), JSON.stringify(parsedData.personalInfo || null), extractionConfidence]);
         }
 
         // AUTO-UPDATE: Add extracted skills to employee profile
@@ -413,7 +420,11 @@ router.get('/profile/resume', authenticate, authorize('employee'), async (req, r
 
         const result = await db.query(`
             SELECT id, file_name as original_filename, file_path, file_type as mime_type, file_size, 
-                   created_at as uploaded_at, parsed_data, extracted_skills
+                   created_at as uploaded_at, status, extraction_confidence,
+                   parsed_data, raw_text,
+                   extracted_contact, extracted_summary, extracted_skills,
+                   extracted_experience, extracted_education, extracted_certifications,
+                   extracted_references, extracted_personal_info
             FROM resumes WHERE employee_id = $1 AND is_primary = true
             ORDER BY created_at DESC LIMIT 1
         `, [employeeId]);
@@ -427,6 +438,62 @@ router.get('/profile/resume', authenticate, authorize('employee'), async (req, r
     } catch (error) {
         console.error('Get resume error:', error);
         res.status(500).json({ error: 'Failed to fetch resume' });
+    }
+});
+
+// Update parsed data for employee resume
+router.put('/profile/resume/parsed-data', authenticate, authorize('employee'), async (req, res) => {
+    try {
+        const empResult = await db.query('SELECT id FROM employee_profiles WHERE user_id = $1', [req.user.id]);
+        if (empResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Profile not found' });
+        }
+        const employeeId = empResult.rows[0].id;
+
+        const {
+            extracted_contact,
+            extracted_personal_info,
+            extracted_summary,
+            extracted_skills,
+            extracted_experience,
+            extracted_education,
+            extracted_certifications,
+            extracted_references
+        } = req.body;
+
+        const result = await db.query(`
+            UPDATE resumes SET
+                extracted_contact = COALESCE($1, extracted_contact),
+                extracted_personal_info = COALESCE($2, extracted_personal_info),
+                extracted_summary = COALESCE($3, extracted_summary),
+                extracted_skills = COALESCE($4, extracted_skills),
+                extracted_experience = COALESCE($5, extracted_experience),
+                extracted_education = COALESCE($6, extracted_education),
+                extracted_certifications = COALESCE($7, extracted_certifications),
+                extracted_references = COALESCE($8, extracted_references),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE employee_id = $9 AND is_primary = true
+            RETURNING id
+        `, [
+            extracted_contact ? JSON.stringify(extracted_contact) : null,
+            extracted_personal_info ? JSON.stringify(extracted_personal_info) : null,
+            extracted_summary ? JSON.stringify(extracted_summary) : null,
+            extracted_skills ? JSON.stringify(extracted_skills) : null,
+            extracted_experience ? JSON.stringify(extracted_experience) : null,
+            extracted_education ? JSON.stringify(extracted_education) : null,
+            extracted_certifications ? JSON.stringify(extracted_certifications) : null,
+            extracted_references ? JSON.stringify(extracted_references) : null,
+            employeeId
+        ]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Resume not found' });
+        }
+
+        res.json({ message: 'Parsed data updated successfully' });
+    } catch (error) {
+        console.error('Update employee parsed data error:', error);
+        res.status(500).json({ error: 'Failed to update parsed data' });
     }
 });
 

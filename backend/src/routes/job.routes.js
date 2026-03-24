@@ -1033,4 +1033,44 @@ router.delete('/:id', authenticate, authorize('admin', 'hr_manager'), async (req
     }
 });
 
+// Manually trigger deadline check (Admin only)
+router.post('/admin/close-expired', authenticate, authorize('admin', 'hr_manager'), async (req, res) => {
+    try {
+        const jobScheduler = require('../services/jobScheduler.service');
+        const closedJobs = await jobScheduler.checkDeadlinesNow();
+
+        res.json({
+            message: `Successfully closed ${closedJobs.length} expired job(s)`,
+            closedJobs: closedJobs.map(job => ({
+                id: job.id,
+                title: job.title,
+                deadline: job.closes_at
+            }))
+        });
+
+    } catch (error) {
+        console.error('Manual deadline check error:', error);
+        res.status(500).json({ error: 'Failed to process expired jobs' });
+    }
+});
+
+// Get jobs approaching deadline (Admin/HR only)
+router.get('/admin/approaching-deadline', authenticate, authorize('admin', 'hr_manager'), async (req, res) => {
+    try {
+        const { hours = 24 } = req.query;
+        const jobScheduler = require('../services/jobScheduler.service');
+        const jobs = await jobScheduler.getJobsApproachingDeadline(parseInt(hours));
+
+        res.json({
+            count: jobs.length,
+            hoursAhead: parseInt(hours),
+            jobs
+        });
+
+    } catch (error) {
+        console.error('Get approaching deadline jobs error:', error);
+        res.status(500).json({ error: 'Failed to fetch jobs approaching deadline' });
+    }
+});
+
 module.exports = router;

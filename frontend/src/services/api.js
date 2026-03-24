@@ -78,6 +78,7 @@ export const applicationsAPI = {
   acceptOffer: (id) => api.post(`/applications/${id}/accept-offer`),
   declineOffer: (id, reason) => api.post(`/applications/${id}/decline-offer`, { reason }),
   getMatchScore: (id, force = false) => api.get(`/applications/${id}/match-score${force ? '?force=true' : ''}`),
+  updateMatchScore: (id, score, comment) => api.put(`/applications/${id}/match-score`, { score, comment }),
   bulkCalculateMatchScore: (applicationIds) => api.post('/applications/bulk-match-score', { applicationIds }),
   reparseResume: (id) => api.post(`/applications/${id}/reparse-resume`),
 };
@@ -129,6 +130,7 @@ export const employeesAPI = {
   },
   getResume: () => api.get('/employees/profile/resume'),
   getResumePreview: () => api.get('/employees/profile/resume/preview'),
+  updateResumeParsedData: (data) => api.put('/employees/profile/resume/parsed-data', data),
   aiScreenResume: () => api.post('/employees/profile/resume/ai-screen'),
   getInternalOpportunities: () => api.get('/employees/opportunities'),
   getOpportunityDetails: (id) => api.get(`/employees/opportunities/${id}`),
@@ -185,6 +187,7 @@ export const resumeAPI = {
   getAll: () => api.get('/resumes'),
   getById: (id) => api.get(`/resumes/${id}`),
   delete: (id) => api.delete(`/resumes/${id}`),
+  updateParsedData: (id, data) => api.put(`/resumes/${id}/parsed-data`, data),
 };
 
 // Interviews API

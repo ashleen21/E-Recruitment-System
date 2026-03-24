@@ -21,6 +21,12 @@ import {
   ShieldCheckIcon,
   ClockIcon,
   ExclamationTriangleIcon,
+  GlobeAltIcon,
+  IdentificationIcon,
+  HomeIcon,
+  HeartIcon,
+  UserIcon,
+  FlagIcon,
 } from '@heroicons/react/24/outline';
 import { applicationsAPI, aiAPI } from '../../services/api';
 
@@ -50,6 +56,20 @@ const ApplicationDetails = () => {
       toast.success('Match score calculated');
     },
     onError: () => toast.error('Failed to calculate match score'),
+  });
+
+  const [editingScore, setEditingScore] = useState(false);
+  const [editedScore, setEditedScore] = useState('');
+  const [hrComment, setHrComment] = useState('');
+
+  const updateScoreMutation = useMutation({
+    mutationFn: ({ score, comment }) => applicationsAPI.updateMatchScore(id, score, comment),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['application', id]);
+      toast.success('Match score updated');
+      setEditingScore(false);
+    },
+    onError: () => toast.error('Failed to update match score'),
   });
 
   const reparseMutation = useMutation({
@@ -176,7 +196,70 @@ const ApplicationDetails = () => {
                 <div className="flex items-center justify-between p-4 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-lg">
                   <div>
                     <p className="text-sm text-gray-600">Overall Match</p>
-                    <p className="text-3xl font-bold text-emerald-700">{parseFloat(app.resume_match_score).toFixed(0)}%</p>
+                    {editingScore ? (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2 mt-1">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={editedScore}
+                            onChange={(e) => setEditedScore(e.target.value)}
+                            className="w-20 px-2 py-1 text-xl font-bold border border-emerald-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                            autoFocus
+                          />
+                          <span className="text-xl font-bold text-emerald-700">%</span>
+                        </div>
+                        <textarea
+                          value={hrComment}
+                          onChange={(e) => setHrComment(e.target.value)}
+                          placeholder="Add your analysis or comment (optional)..."
+                          rows={3}
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 resize-none"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              const val = parseFloat(editedScore);
+                              if (isNaN(val) || val < 0 || val > 100) {
+                                toast.error('Score must be between 0 and 100');
+                                return;
+                              }
+                              updateScoreMutation.mutate({ score: val, comment: hrComment });
+                            }}
+                            disabled={updateScoreMutation.isPending}
+                            className="px-3 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
+                          >
+                            <CheckBadgeIcon className="h-4 w-4" />
+                            {updateScoreMutation.isPending ? 'Saving...' : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => setEditingScore(false)}
+                            className="px-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200 flex items-center gap-1"
+                          >
+                            <XMarkIcon className="h-4 w-4" />
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <p className="text-3xl font-bold text-emerald-700">{parseFloat(app.resume_match_score).toFixed(0)}%</p>
+                        <button
+                          onClick={() => {
+                            setEditedScore(parseFloat(app.resume_match_score).toFixed(0));
+                            setHrComment(app.hr_score_comment || '');
+                            setEditingScore(true);
+                          }}
+                          className="p-1 text-gray-400 hover:text-emerald-600 transition-colors"
+                          title="Edit score"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="h-5 w-5">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                          </svg>
+                        </button>
+                      </div>
+                    )}
                     {app?.resume_match_details?.recommendation && (
                       <span className={`inline-block mt-2 px-2 py-1 rounded text-xs font-medium ${
                         app.resume_match_details.recommendation === 'STRONG_MATCH' ? 'bg-green-100 text-green-800' :
@@ -208,6 +291,14 @@ const ApplicationDetails = () => {
                   <div className="p-3 bg-blue-50 rounded-lg">
                     <p className="text-sm font-medium text-blue-800 mb-1">AI Analysis</p>
                     <p className="text-sm text-blue-700">{app.resume_match_details.overallAnalysis}</p>
+                  </div>
+                )}
+
+                {/* HR Comment */}
+                {app?.hr_score_comment && !editingScore && (
+                  <div className="p-3 bg-amber-50 rounded-lg">
+                    <p className="text-sm font-medium text-amber-800 mb-1">HR Analysis</p>
+                    <p className="text-sm text-amber-700">{app.hr_score_comment}</p>
                   </div>
                 )}
 
@@ -643,6 +734,46 @@ const ApplicationDetails = () => {
                     </div>
                   </div>
                 )}
+
+                {/* References */}
+                {parsedResume?.extracted_references?.length > 0 && (
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h4 className="font-medium text-gray-900 mb-3 flex items-center">
+                      <UserCircleIcon className="h-5 w-5 mr-2 text-purple-600" />
+                      References
+                    </h4>
+                    {parsedResume.extracted_references[0]?.note ? (
+                      <p className="text-sm text-gray-600 italic">{parsedResume.extracted_references[0].note}</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {parsedResume.extracted_references.map((ref, idx) => (
+                          <div key={idx} className="border-l-2 border-purple-200 pl-4">
+                            <p className="font-medium text-gray-900">{ref.name}</p>
+                            {ref.title && <p className="text-sm text-gray-600">{ref.title}</p>}
+                            {ref.company && <p className="text-sm text-purple-600">{ref.company}</p>}
+                            {ref.relationship && (
+                              <p className="text-xs text-gray-500">({ref.relationship})</p>
+                            )}
+                            <div className="flex gap-4 mt-1 text-sm">
+                              {ref.email && (
+                                <span className="flex items-center text-gray-600">
+                                  <EnvelopeIcon className="h-3 w-3 mr-1" />
+                                  {ref.email}
+                                </span>
+                              )}
+                              {ref.phone && (
+                                <span className="flex items-center text-gray-600">
+                                  <PhoneIcon className="h-3 w-3 mr-1" />
+                                  {ref.phone}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center py-8 text-gray-500">
@@ -702,6 +833,69 @@ const ApplicationDetails = () => {
                 <div>
                   <p className="text-sm text-gray-500">Experience</p>
                   <p className="font-medium text-gray-900">{app.years_of_experience} years</p>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.dateOfBirth && (
+                <div className="flex items-center gap-3">
+                  <CalendarIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Date of Birth</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.dateOfBirth}</p>
+                  </div>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.nationality && (
+                <div className="flex items-center gap-3">
+                  <FlagIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Nationality</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.nationality}</p>
+                  </div>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.gender && (
+                <div className="flex items-center gap-3">
+                  <UserIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Gender</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.gender}</p>
+                  </div>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.maritalStatus && (
+                <div className="flex items-center gap-3">
+                  <HeartIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Marital Status</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.maritalStatus}</p>
+                  </div>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.address && (
+                <div className="flex items-center gap-3">
+                  <HomeIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Address</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.address}</p>
+                  </div>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.visaStatus && (
+                <div className="flex items-center gap-3">
+                  <IdentificationIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Visa/Work Authorization</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.visaStatus}</p>
+                  </div>
+                </div>
+              )}
+              {parsedResume?.extracted_personal_info?.drivingLicense && (
+                <div className="flex items-center gap-3">
+                  <IdentificationIcon className="h-5 w-5 text-gray-400" />
+                  <div>
+                    <p className="text-sm text-gray-500">Driving License</p>
+                    <p className="font-medium text-gray-900">{parsedResume.extracted_personal_info.drivingLicense}</p>
+                  </div>
                 </div>
               )}
               {app?.linkedin_url && (

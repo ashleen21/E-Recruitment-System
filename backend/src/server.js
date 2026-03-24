@@ -8,6 +8,7 @@ require('dotenv').config();
 
 const config = require('./config');
 const db = require('./config/database');
+const jobScheduler = require('./services/jobScheduler.service');
 
 // Import Routes
 const authRoutes = require('./routes/auth.routes');
@@ -31,7 +32,7 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 app.use(cors({
-    origin: config.frontendUrl,
+    origin: [config.frontendUrl, 'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
     credentials: true
 }));
 
@@ -114,6 +115,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     Frontend URL: ${config.frontendUrl}
     ================================
     `);
+
+    // Initialize job scheduler for automatic deadline handling
+    jobScheduler.init();
 });
 
 server.on('error', (err) => {

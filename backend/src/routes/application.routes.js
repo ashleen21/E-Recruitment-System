@@ -239,7 +239,8 @@ router.get('/:id', authenticate, async (req, res) => {
                               r.status as resume_status,
                               r.raw_text, r.parsed_data, r.extracted_contact, r.extracted_summary,
                               r.extracted_skills, r.extracted_experience, r.extracted_education,
-                              r.extracted_certifications, r.extraction_confidence, r.parsing_error,
+                              r.extracted_certifications, r.extracted_personal_info, r.extracted_references,
+                              r.extraction_confidence, r.parsing_error,
                               r.parsed_at
                        FROM resumes r
                        WHERE r.candidate_id = cp.id OR r.employee_id = ep.id
@@ -948,6 +949,47 @@ router.post('/:id/decline-offer', authenticate, async (req, res) => {
     } catch (error) {
         console.error('Decline offer error:', error);
         res.status(500).json({ error: 'Failed to decline offer' });
+    }
+});
+
+// Manually update match score (HR override)
+router.put('/:id/match-score', authenticate, authorize('admin', 'hr_manager', 'recruiter'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { score, comment } = req.body;
+
+        const numScore = parseFloat(score);
+        if (isNaN(numScore) || numScore < 0 || numScore > 100) {
+            return res.status(400).json({ error: 'Score must be a number between 0 and 100' });
+        }
+
+        // Ensure hr_score_comment column exists
+        await db.query(`
+            ALTER TABLE applications ADD COLUMN IF NOT EXISTS hr_score_comment TEXT
+        `);
+
+        const result = await db.query(`
+            UPDATE applications SET 
+                resume_match_score = $1,
+                hr_score_comment = $2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3
+            RETURNING id, resume_match_score, hr_score_comment
+        `, [numScore, comment || null, id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Application not found' });
+        }
+
+        res.json({
+            applicationId: id,
+            matchScore: numScore,
+            hrComment: comment || null,
+            message: 'Match score updated successfully'
+        });
+    } catch (error) {
+        console.error('Update match score error:', error);
+        res.status(500).json({ error: 'Failed to update match score' });
     }
 });
 

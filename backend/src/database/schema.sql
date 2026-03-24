@@ -462,6 +462,8 @@ CREATE TABLE resumes (
     extracted_experience JSONB,
     extracted_education JSONB,
     extracted_certifications JSONB,
+    extracted_personal_info JSONB,
+    extracted_references JSONB,
     extraction_confidence DECIMAL(5,2),
     
     -- AI Analysis
