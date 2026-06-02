@@ -594,7 +594,6 @@ const EmployeeDetails = () => {
               {paths.map((path, idx) => {
                 const readiness = path.readiness_score ?? path.readiness;
                 const success = path.success_probability ?? path.probability;
-                const source = path.source || (aiPaths.length > 0 ? 'ai' : 'legacy');
 
                 return (
                   <div key={path.id || idx} className="p-3 bg-gray-50 rounded-lg">

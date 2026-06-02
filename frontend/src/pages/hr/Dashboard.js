@@ -10,13 +10,11 @@ import {
   ArrowTrendingDownIcon,
   ClockIcon,
   CheckCircleIcon,
-  XCircleIcon,
   GiftIcon,
   ChartBarIcon,
   EyeIcon,
   ArrowPathIcon,
   SparklesIcon,
-  UserGroupIcon,
   BuildingOfficeIcon,
 } from '@heroicons/react/24/outline';
 import { analyticsAPI } from '../../services/api';
