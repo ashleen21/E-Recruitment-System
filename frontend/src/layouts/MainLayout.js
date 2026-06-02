@@ -138,6 +138,7 @@ const MainLayout = () => {
         { name: 'Dashboard', href: '/employee/dashboard', icon: HomeIcon },
         { name: 'My Profile', href: '/employee/profile', icon: UserCircleIcon },
         { name: 'Internal Opportunities', href: '/employee/opportunities', icon: BuildingOfficeIcon },
+        { name: 'Career Path', href: '/employee/career-path', icon: ChartBarIcon },
         { name: 'My Applications', href: '/employee/applications', icon: DocumentTextIcon },
         { name: 'My Interviews', href: '/employee/interviews', icon: CalendarIcon },
       ];

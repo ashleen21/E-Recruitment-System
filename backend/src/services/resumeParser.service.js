@@ -5,6 +5,8 @@ const mammoth = require('mammoth');
 const Tesseract = require('tesseract.js');
 const OpenAI = require('openai');
 const config = require('../config');
+const mlMatchService = require('./mlMatch.service');
+const skillDecayService = require('./skillDecay.service');
 
 // Initialize OpenAI (if API key is provided)
 let openai = null;
@@ -1048,21 +1050,185 @@ Extract as much information as possible from EVERY section of the resume. For an
 
     // Calculate match score between resume and job requirements
     async calculateJobMatchScore(parsedResume, jobRequirements, resumeText = '') {
-        // Try OpenAI first for more accurate matching
+        const baseDetails = this.calculateJobMatchScoreBasic(parsedResume, jobRequirements);
+
+        // Try ML model first for primary match scoring
+        const mlPayload = {
+            resume_text: resumeText || '',
+            job_description_text: jobRequirements?.job_description || jobRequirements?.job_requirements_text || '',
+            candidate_skills: (parsedResume.skills || []).map(s => (typeof s === 'string' ? s : s.name || s.skill || '')).join(', '),
+            required_skills: (jobRequirements.required_skills || []).map(s => (typeof s === 'string' ? s : s.name || '')).join(', '),
+            candidate_education: (parsedResume.education || []).map(e => e.degree || e.field || e.rawDegree || '').join(', '),
+            required_education: jobRequirements.education_level || '',
+            candidate_experience_years: parsedResume.experience?.totalYears || null,
+            required_experience_years: jobRequirements.min_experience_years || 0,
+            previous_jobs_count: Array.isArray(parsedResume.experience) ? parsedResume.experience.length : null,
+            skill_match_score: baseDetails.skillsMatch?.score || null,
+            experience_match_score: baseDetails.experienceMatch?.score || null,
+            education_match_score: baseDetails.educationMatch?.score || null
+        };
+
+        try {
+            const mlResult = await mlMatchService.predictMatchScore(mlPayload);
+            if (mlResult && typeof mlResult.score === 'number') {
+                const enrichedDetails = await this.enrichSkillsMatchWithAI(baseDetails, parsedResume, jobRequirements, resumeText);
+                const decayedDetails = this.applySkillDecay(parsedResume, jobRequirements, enrichedDetails);
+                return {
+                    ...decayedDetails,
+                    mlPowered: true,
+                    model: mlResult.metadata || {}
+                };
+            }
+        } catch (error) {
+            console.error('ML job match failed, using fallback:', error.message);
+        }
+
+        // Fallback to OpenAI if ML is unavailable
         if (this.useOpenAI && openai && resumeText) {
             try {
                 console.log('Using OpenAI for job match scoring...');
                 const aiResult = await this.calculateJobMatchScoreWithAI(parsedResume, jobRequirements, resumeText);
                 if (aiResult) {
-                    return aiResult;
+                    return this.applySkillDecay(parsedResume, jobRequirements, aiResult);
                 }
             } catch (error) {
                 console.error('OpenAI job match failed, using fallback:', error.message);
             }
         }
 
-        // Fallback to regex-based matching
-        return this.calculateJobMatchScoreBasic(parsedResume, jobRequirements);
+        // Final fallback to regex-based matching
+        const enrichedDetails = await this.enrichSkillsMatchWithAI(baseDetails, parsedResume, jobRequirements, resumeText);
+        return this.applySkillDecay(parsedResume, jobRequirements, enrichedDetails);
+    }
+
+    applySkillDecay(parsedResume, jobRequirements, matchDetails) {
+        if (!matchDetails || !jobRequirements) return matchDetails;
+
+        const requiredSkills = (jobRequirements.required_skills || [])
+            .map(s => (typeof s === 'string' ? s : s.name || ''))
+            .filter(Boolean);
+
+        const candidateSkills = (parsedResume.skills || [])
+            .map(s => (typeof s === 'string' ? s : s.name || s.skill || ''))
+            .filter(Boolean);
+
+        const experienceItems = Array.isArray(parsedResume.experience) ? parsedResume.experience : [];
+        const decayData = skillDecayService.calculateSkillDecay(candidateSkills, experienceItems);
+
+        if (requiredSkills.length === 0 || candidateSkills.length === 0) {
+            return {
+                ...matchDetails,
+                skillsFreshness: decayData.skills || []
+            };
+        }
+        const skillMap = decayData.skillMap || {};
+
+        const matchedSkills = matchDetails.skillsMatch?.matched || [];
+        const weightedMatches = matchedSkills.reduce((sum, skillName) => {
+            const normalized = (skillName || '').toLowerCase();
+            const entry = skillMap[normalized];
+            return sum + (entry?.multiplier || 1);
+        }, 0);
+
+        const rawScore = matchDetails.skillsMatch?.score || 0;
+        const decayedScore = requiredSkills.length > 0
+            ? Math.round((weightedMatches / requiredSkills.length) * 100)
+            : rawScore;
+
+        const experienceScore = matchDetails.experienceMatch?.score || 0;
+        const educationScore = matchDetails.educationMatch?.score || 0;
+        const overallScore = Math.round(
+            decayedScore * 0.4 + experienceScore * 0.35 + educationScore * 0.25
+        );
+
+        return {
+            ...matchDetails,
+            skillsMatch: {
+                ...matchDetails.skillsMatch,
+                rawScore,
+                score: decayedScore,
+                decayApplied: true
+            },
+            skillsFreshness: decayData.skills || [],
+            overallScore
+        };
+    }
+
+    async enrichSkillsMatchWithAI(baseDetails, parsedResume, jobRequirements, resumeText = '') {
+        if (!this.useOpenAI || !openai) return baseDetails;
+
+        const requiredSkills = (jobRequirements.required_skills || [])
+            .map(s => (typeof s === 'string' ? s : s.name || ''))
+            .filter(Boolean);
+        const candidateSkills = (parsedResume.skills || [])
+            .map(s => (typeof s === 'string' ? s : s.name || s.skill || ''))
+            .filter(Boolean);
+
+        if (requiredSkills.length === 0 || candidateSkills.length === 0) return baseDetails;
+
+        const prompt = `You are an HR analyst. Compare required skills to candidate skills and consider synonyms and transferable skills.
+
+REQUIRED SKILLS:
+${requiredSkills.join(', ')}
+
+CANDIDATE SKILLS:
+${candidateSkills.join(', ')}
+
+Return JSON with this structure:
+{
+  "matched": ["skill"],
+  "missing": ["skill"],
+  "transferable": ["skill"],
+  "analysis": "short sentence"
+}
+
+Rules:
+- Treat close synonyms as matched (e.g., troubleshooting = fault-finding).
+- Put only skills from REQUIRED SKILLS in matched/missing.
+- Put relevant candidate skills that help but are not required into transferable.
+- Keep arrays deduplicated.`;
+
+        try {
+            const response = await openai.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'You compare skill lists and return strict JSON.'
+                    },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.2,
+                max_tokens: 600,
+                response_format: { type: 'json_object' }
+            });
+
+            const result = JSON.parse(response.choices[0].message.content);
+            const matched = Array.isArray(result.matched) ? result.matched : [];
+            const missing = Array.isArray(result.missing) ? result.missing : [];
+            const transferable = Array.isArray(result.transferable) ? result.transferable : [];
+            const analysis = result.analysis || baseDetails.skillsMatch.analysis || '';
+
+            const matchedCount = requiredSkills.length > 0 ? Math.min(matched.length, requiredSkills.length) : 0;
+            const updatedScore = requiredSkills.length > 0
+                ? Math.round((matchedCount / requiredSkills.length) * 100)
+                : baseDetails.skillsMatch.score;
+
+            return {
+                ...baseDetails,
+                skillsMatch: {
+                    ...baseDetails.skillsMatch,
+                    score: updatedScore,
+                    matched,
+                    missing,
+                    transferable,
+                    analysis
+                }
+            };
+        } catch (error) {
+            console.error('AI skills match enrichment failed:', error.message);
+            return baseDetails;
+        }
     }
 
     async calculateJobMatchScoreWithAI(parsedResume, jobRequirements, resumeText) {
@@ -1307,7 +1473,7 @@ Be fair but thorough. Consider transferable skills and related experience.`;
 
         matchDetails.overallScore = Math.round(totalScore);
         matchDetails.aiPowered = false;
-        return matchDetails;
+        return this.applySkillDecay(parsedResume, jobRequirements, matchDetails);
     }
 }
 

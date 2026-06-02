@@ -1,29 +1,30 @@
-import React, { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  ArrowRightIcon,
-  CheckCircleIcon,
-  LockClosedIcon,
   AcademicCapIcon,
-  BriefcaseIcon,
   ChartBarIcon,
   SparklesIcon,
+  BriefcaseIcon,
   BookOpenIcon,
-  ArrowTrendingUpIcon,
 } from '@heroicons/react/24/outline';
-import { employeesAPI, skillsAPI } from '../../services/api';
+import { employeesAPI } from '../../services/api';
+import toast from 'react-hot-toast';
 
 const CareerPath = () => {
-  const [selectedPath, setSelectedPath] = useState(null);
-
+  const queryClient = useQueryClient();
   const { data: careerData, isLoading } = useQuery({
     queryKey: ['career-path'],
-    queryFn: () => employeesAPI.getCareerPath(),
+    queryFn: () => employeesAPI.getCareerPaths(),
   });
 
-  const { data: skillGaps } = useQuery({
-    queryKey: ['skill-gaps'],
-    queryFn: () => skillsAPI.getGaps(),
+  const generateMutation = useMutation({
+    mutationFn: () => employeesAPI.generateCareerPaths(),
+    onSuccess: (response) => {
+      queryClient.setQueryData(['career-path'], response);
+      queryClient.invalidateQueries({ queryKey: ['career-path'] });
+      toast.success('Career paths generated');
+    },
+    onError: () => toast.error('Failed to generate career paths'),
   });
 
   if (isLoading) {
@@ -34,255 +35,146 @@ const CareerPath = () => {
     );
   }
 
-  const pathData = careerData?.data || {};
-  const gaps = skillGaps?.data || [];
-  const paths = pathData.possiblePaths || [];
-  const currentPosition = pathData.currentPosition || {};
-  const milestones = pathData.milestones || [];
+  const recommendations = careerData?.data?.recommendations || [];
+  const skillContext = careerData?.data?.skill_context;
+
+  const freshnessStyle = (freshness) => {
+    if (freshness === 'fresh') return 'bg-emerald-100 text-emerald-700';
+    if (freshness === 'aging') return 'bg-amber-100 text-amber-700';
+    return 'bg-red-100 text-red-700';
+  };
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Career Path</h1>
-        <p className="text-gray-600">Explore your growth opportunities and track your progress</p>
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Career Path</h1>
+          <p className="text-gray-600">Explore your growth opportunities and track your progress</p>
+        </div>
+        <button
+          onClick={() => generateMutation.mutate()}
+          disabled={generateMutation.isPending}
+          className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-primary-700 disabled:opacity-50 flex items-center gap-2"
+        >
+          <SparklesIcon className="h-4 w-4" />
+          {generateMutation.isPending ? 'Generating...' : 'Generate Career Paths'}
+        </button>
       </div>
 
-      {/* Current Position */}
-      <div className="card mb-6 bg-gradient-to-r from-primary-500 to-primary-600 text-white">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <p className="text-primary-100 text-sm">Your Current Position</p>
-            <h2 className="text-2xl font-bold mt-1">{currentPosition.title || 'N/A'}</h2>
-            <p className="text-primary-200">{currentPosition.department} • Level {currentPosition.level}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-primary-100 text-sm">Time in Role</p>
-            <p className="text-xl font-semibold">{currentPosition.tenure || '0'} months</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Career Progress */}
-      <div className="grid lg:grid-cols-3 gap-6 mb-8">
-        {/* Progress Overview */}
-        <div className="lg:col-span-2 card">
-          <h3 className="text-lg font-semibold mb-4">Career Progression</h3>
-          
-          <div className="relative">
-            {/* Progress Line */}
-            <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gray-200" />
-            
-            <div className="space-y-6">
-              {milestones.map((milestone, idx) => (
-                <div key={idx} className="relative flex items-start gap-4">
-                  <div className={`relative z-10 flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${
-                    milestone.completed 
-                      ? 'bg-green-500 text-white' 
-                      : milestone.current 
-                        ? 'bg-primary-500 text-white ring-4 ring-primary-100' 
-                        : 'bg-gray-200 text-gray-400'
-                  }`}>
-                    {milestone.completed ? (
-                      <CheckCircleIcon className="h-6 w-6" />
-                    ) : milestone.current ? (
-                      <ArrowTrendingUpIcon className="h-6 w-6" />
-                    ) : (
-                      <LockClosedIcon className="h-5 w-5" />
-                    )}
-                  </div>
-                  <div className={`flex-1 pb-6 ${!milestone.completed && !milestone.current ? 'opacity-50' : ''}`}>
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-semibold text-gray-900">{milestone.title}</h4>
-                      {milestone.date && (
-                        <span className="text-sm text-gray-500">
-                          {milestone.completed ? 'Achieved' : 'Target'}: {milestone.date}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-600 mt-1">{milestone.description}</p>
-                    {milestone.current && (
-                      <div className="mt-2">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs text-gray-500">Progress</span>
-                          <span className="text-xs font-medium">{milestone.progress || 0}%</span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className="bg-primary-500 h-2 rounded-full"
-                            style={{ width: `${milestone.progress || 0}%` }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Skills Gap */}
-        <div className="card">
-          <h3 className="text-lg font-semibold mb-4">Skills to Develop</h3>
-          <div className="space-y-4">
-            {gaps.length > 0 ? (
-              gaps.map((skill, idx) => (
-                <div key={idx} className="p-3 bg-gray-50 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-medium text-gray-900">{skill.name}</span>
-                    <span className={`text-xs px-2 py-1 rounded ${
-                      skill.priority === 'high' ? 'bg-red-100 text-red-800' :
-                      skill.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                      'bg-green-100 text-green-800'
-                    }`}>
-                      {skill.priority || 'Recommended'}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-primary-500 h-2 rounded-full"
-                        style={{ width: `${skill.currentLevel || 0}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-gray-500">{skill.currentLevel || 0}%</span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">Target: {skill.targetLevel || 100}%</p>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-6">
-                <CheckCircleIcon className="h-10 w-10 mx-auto text-green-500 mb-2" />
-                <p className="text-gray-600">All skills on track!</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Possible Career Paths */}
-      <div className="card mb-6">
-        <h3 className="text-lg font-semibold mb-4">Possible Career Paths</h3>
-        <div className="grid md:grid-cols-3 gap-4">
-          {paths.map((path, idx) => (
-            <div
-              key={idx}
-              onClick={() => setSelectedPath(selectedPath?.id === path.id ? null : path)}
-              className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                selectedPath?.id === path.id ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:border-gray-300'
-              }`}
-            >
-              <div className="flex items-center gap-3 mb-3">
-                <div className={`p-2 rounded-lg ${
-                  path.type === 'management' ? 'bg-purple-100' :
-                  path.type === 'technical' ? 'bg-blue-100' :
-                  'bg-green-100'
-                }`}>
-                  {path.type === 'management' ? (
-                    <BriefcaseIcon className="h-5 w-5 text-purple-600" />
-                  ) : path.type === 'technical' ? (
-                    <ChartBarIcon className="h-5 w-5 text-blue-600" />
-                  ) : (
-                    <SparklesIcon className="h-5 w-5 text-green-600" />
-                  )}
-                </div>
-                <div>
-                  <h4 className="font-semibold text-gray-900">{path.name}</h4>
-                  <p className="text-xs text-gray-500">{path.type} track</p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-600">{path.roles?.length || 0} positions</span>
-                <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">
-                  {path.readiness || 0}% ready
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Selected Path Details */}
-      {selectedPath && (
+      {skillContext?.skills?.length > 0 && (
         <div className="card mb-6">
-          <h3 className="text-lg font-semibold mb-4">{selectedPath.name} Path</h3>
-          
-          <div className="flex items-center gap-4 overflow-x-auto pb-4">
-            <div className="flex-shrink-0 p-4 bg-primary-100 border-2 border-primary-500 rounded-lg text-center min-w-[150px]">
-              <p className="text-xs text-primary-600">Current</p>
-              <p className="font-semibold text-gray-900">{currentPosition.title}</p>
-            </div>
-            
-            {selectedPath.roles?.map((role, idx) => (
-              <React.Fragment key={idx}>
-                <ArrowRightIcon className="h-6 w-6 text-gray-400 flex-shrink-0" />
-                <div className={`flex-shrink-0 p-4 border-2 rounded-lg text-center min-w-[150px] ${
-                  role.achieved ? 'bg-green-50 border-green-500' : 'bg-gray-50 border-gray-200'
-                }`}>
-                  <p className="text-xs text-gray-500">{role.timeline || 'TBD'}</p>
-                  <p className="font-semibold text-gray-900">{role.title}</p>
-                  <p className="text-xs text-gray-500">Level {role.level}</p>
-                </div>
-              </React.Fragment>
+          <h3 className="text-lg font-semibold mb-3">Skill Freshness</h3>
+          <p className="text-sm text-gray-600 mb-3">
+            Freshness uses the same resume and profile data HR sees on your applications.
+            {skillContext.source && (
+              <span className="ml-1 text-gray-500">(primary: {skillContext.source})</span>
+            )}
+            {skillContext.summary && (
+              <span className="ml-1">
+                — {skillContext.summary.fresh || 0} fresh, {skillContext.summary.aging || 0} aging, {skillContext.summary.stale || 0} stale
+              </span>
+            )}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {skillContext.skills.map((skill, idx) => (
+              <span key={idx} className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 rounded text-sm text-gray-800">
+                {skill.name}
+                <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${freshnessStyle(skill.freshness)}`}>
+                  {skill.freshness === 'fresh' ? 'Fresh' : skill.freshness === 'aging' ? 'Aging' : 'Stale'}
+                </span>
+              </span>
             ))}
           </div>
-
-          <div className="mt-6 grid md:grid-cols-2 gap-6">
-            <div>
-              <h4 className="font-medium text-gray-900 mb-3">Required Skills for This Path</h4>
-              <div className="space-y-2">
-                {selectedPath.requiredSkills?.map((skill, idx) => (
-                  <div key={idx} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                    <span className="text-sm text-gray-700">{skill.name}</span>
-                    <span className={`text-xs px-2 py-1 rounded ${
-                      skill.acquired ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'
+          {skillContext.certifications?.length > 0 && (
+            <div className="mt-4">
+              <p className="text-sm font-medium text-gray-700 mb-2">Certifications</p>
+              <div className="space-y-1">
+                {skillContext.certifications.map((cert, idx) => (
+                  <div key={idx} className="flex items-center justify-between text-sm">
+                    <span className="text-gray-800">{cert.name}</span>
+                    <span className={`px-2 py-0.5 rounded text-xs ${
+                      cert.status === 'Expired' ? 'bg-red-100 text-red-700' :
+                      cert.status === 'Expiring Soon' ? 'bg-amber-100 text-amber-700' :
+                      'bg-emerald-100 text-emerald-700'
                     }`}>
-                      {skill.acquired ? 'Acquired' : 'Needed'}
+                      {cert.status}
                     </span>
                   </div>
                 ))}
               </div>
             </div>
-            
-            <div>
-              <h4 className="font-medium text-gray-900 mb-3">Recommended Actions</h4>
-              <div className="space-y-2">
-                {selectedPath.actions?.map((action, idx) => (
-                  <div key={idx} className="flex items-start gap-2 p-2 bg-blue-50 rounded">
-                    <BookOpenIcon className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm text-gray-900">{action.title}</p>
-                      <p className="text-xs text-gray-500">{action.type} • {action.duration}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
-      {/* Development Resources */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Development Resources</h3>
-        <div className="grid md:grid-cols-4 gap-4">
-          {[
-            { title: 'Learning Portal', icon: AcademicCapIcon, description: 'Access courses and certifications', color: 'blue' },
-            { title: 'Mentorship Program', icon: SparklesIcon, description: 'Connect with senior mentors', color: 'purple' },
-            { title: 'Skills Assessment', icon: ChartBarIcon, description: 'Take skill evaluations', color: 'green' },
-            { title: 'Career Coaching', icon: BriefcaseIcon, description: 'Book a session with HR', color: 'orange' },
-          ].map((resource, idx) => (
-            <button
-              key={idx}
-              className={`p-4 bg-${resource.color}-50 rounded-lg text-left hover:bg-${resource.color}-100 transition-colors`}
-            >
-              <resource.icon className={`h-8 w-8 text-${resource.color}-600 mb-2`} />
-              <h4 className="font-medium text-gray-900">{resource.title}</h4>
-              <p className="text-sm text-gray-600 mt-1">{resource.description}</p>
-            </button>
-          ))}
-        </div>
+      {/* Career Path Recommendations */}
+      <div className="card mb-6">
+        <h3 className="text-lg font-semibold mb-4">Recommended Next Roles</h3>
+        {recommendations.length === 0 ? (
+          <div className="text-center py-10 text-gray-500">
+            <SparklesIcon className="h-10 w-10 mx-auto mb-2 text-gray-300" />
+            <p>No recommendations yet. Use Generate Career Paths to create new suggestions.</p>
+          </div>
+        ) : (
+          <div className="grid md:grid-cols-3 gap-4">
+            {recommendations.slice(0, 3).map((rec, idx) => (
+              <div key={idx} className="border border-gray-200 rounded-lg p-4 bg-white">
+                <div className="flex items-center gap-2 mb-2">
+                  <ChartBarIcon className="h-5 w-5 text-primary-600" />
+                  <h4 className="font-semibold text-gray-900">{rec.role}</h4>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-sm mb-3">
+                  <div>
+                    <p className="text-gray-500">Match</p>
+                    <p className="font-semibold text-gray-900">{rec.match_percentage}%</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Readiness</p>
+                    <p className="font-semibold text-gray-900">{rec.readiness_score}%</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Success</p>
+                    <p className="font-semibold text-gray-900">{Math.round((rec.success_probability || 0) * 100)}%</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-500">Time</p>
+                    <p className="font-semibold text-gray-900">{rec.estimated_time_months} mo</p>
+                  </div>
+                </div>
+                {rec.skill_gaps?.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs font-medium text-gray-600 mb-1">Skill Gaps</p>
+                    <div className="flex flex-wrap gap-1">
+                      {rec.skill_gaps.map((skill, sIdx) => (
+                        <span key={sIdx} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {rec.training_recommendations?.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs font-medium text-gray-600 mb-1">Training</p>
+                    <ul className="text-xs text-gray-700 space-y-1">
+                      {rec.training_recommendations.map((training, tIdx) => (
+                        <li key={tIdx} className="flex items-start gap-2">
+                          <BookOpenIcon className="h-4 w-4 text-blue-600 flex-shrink-0 mt-0.5" />
+                          <span>{training}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {rec.explanation && (
+                  <p className="text-xs text-gray-600">{rec.explanation}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
+
     </div>
   );
 };

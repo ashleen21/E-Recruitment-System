@@ -119,7 +119,13 @@ class JobDistributionService {
                         console.log('Twitter/X API quota reached, falling back to share link');
                     } else {
                         console.error('Twitter/X API error:', tweetError);
-                        throw tweetError;
+                        // Return actual failure instead of falling through to share link
+                        return {
+                            success: false,
+                            error: `X (Twitter) API error: ${tweetError.message || 'Authentication failed'}`,
+                            message: 'Failed to post to X (Twitter). Check API credentials.',
+                            requiresManualShare: false
+                        };
                     }
                 }
             }
@@ -168,15 +174,87 @@ class JobDistributionService {
     }
 
     async postToLinkedIn(job) {
-        // Generate LinkedIn share URL (manual share)
+        // Build the job post text with full details
+        const location = job.location || 'Location not specified';
+        const jobType = job.job_type || job.type || 'Full-time';
+        const salary = job.salary_min && job.salary_max 
+            ? `$${Number(job.salary_min).toLocaleString()} - $${Number(job.salary_max).toLocaleString()}`
+            : job.salary_min 
+                ? `From $${Number(job.salary_min).toLocaleString()}`
+                : '';
+        
+        // Format deadline (closes_at is the database column)
+        let deadline = '';
+        if (job.closes_at) {
+            const deadlineDate = new Date(job.closes_at);
+            deadline = deadlineDate.toLocaleDateString('en-US', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+            });
+        }
+        
+        // Create LinkedIn post text
+        let postText = `🚀 We're Hiring: ${job.title}\n\n`;
+        postText += `📍 Location: ${location}\n`;
+        postText += `💼 Type: ${jobType}\n`;
+        if (salary) postText += `💰 Salary: ${salary}\n`;
+        if (deadline) postText += `📅 Application Deadline: ${deadline}\n`;
+        if (job.experience_level) postText += `📊 Experience Level: ${job.experience_level}\n`;
+        postText += `\n`;
+        
+        // Add description - ensure it's a string
+        if (job.description && typeof job.description === 'string') {
+            const cleanDescription = job.description.replace(/<[^>]*>/g, '').trim();
+            postText += `📝 About the Role:\n${cleanDescription}\n\n`;
+        }
+        
+        // Add responsibilities if available (TEXT[] array in database)
+        if (job.responsibilities && Array.isArray(job.responsibilities) && job.responsibilities.length > 0) {
+            postText += `📋 Responsibilities:\n`;
+            job.responsibilities.forEach(resp => {
+                postText += `• ${resp}\n`;
+            });
+            postText += `\n`;
+        }
+        
+        // Add requirements if available (TEXT[] array in database)
+        if (job.requirements && Array.isArray(job.requirements) && job.requirements.length > 0) {
+            postText += `✅ Requirements:\n`;
+            job.requirements.forEach(req => {
+                postText += `• ${req}\n`;
+            });
+            postText += `\n`;
+        }
+        
+        // Add skills if available (skill_names is added from job_skills join)
+        if (job.skill_names && Array.isArray(job.skill_names) && job.skill_names.length > 0) {
+            postText += `🛠️ Skills Needed:\n${job.skill_names.join(', ')}\n\n`;
+        }
+        
+        // Add benefits if available (TEXT[] array in database)
+        if (job.benefits && Array.isArray(job.benefits) && job.benefits.length > 0) {
+            postText += `🎁 Benefits:\n`;
+            job.benefits.forEach(benefit => {
+                postText += `• ${benefit}\n`;
+            });
+            postText += `\n`;
+        }
+        
         const jobUrl = `${this.frontendUrl}/jobs/${job.id}`;
+        postText += `🔗 Apply now: ${jobUrl}\n\n`;
+        postText += `#Hiring #JobOpportunity #${(job.title || '').replace(/\s+/g, '')} #Careers #Jobs`;
+        
+        // Generate share URL (as fallback)
         const shareUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(jobUrl)}`;
         
         return {
             success: true,
             shareUrl,
-            message: 'LinkedIn share link generated',
-            requiresManualShare: true
+            postText,
+            message: 'LinkedIn post text generated - copy and paste into LinkedIn',
+            requiresManualShare: true,
+            platform: 'linkedin'
         };
     }
 

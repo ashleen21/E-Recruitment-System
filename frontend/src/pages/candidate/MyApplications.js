@@ -322,6 +322,18 @@ const MyApplications = () => {
                   {/* Status Timeline */}
                   <div className="mt-4 pt-4 border-t">
                     <p className="text-sm text-gray-600">{getStatusDescription(app.status)}</p>
+                    {app.status === 'rejected' && app.rejection_reason && (
+                      <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-lg">
+                        <p className="text-xs font-medium text-red-800 mb-1">Feedback</p>
+                        <p className="text-sm text-red-900 line-clamp-3">{app.rejection_reason}</p>
+                        <button
+                          onClick={() => openDetailsModal(app)}
+                          className="text-xs text-red-700 hover:text-red-900 mt-1"
+                        >
+                          Read full feedback →
+                        </button>
+                      </div>
+                    )}
                     {app.status === 'interview_scheduled' && app.interview && (
                       <div className="mt-3 p-3 bg-purple-50 rounded-lg">
                         <p className="font-medium text-purple-800">Interview Scheduled</p>
@@ -646,6 +658,13 @@ const MyApplications = () => {
                     {getStatusDescription(detailsModal.application.status)}
                   </p>
                 </div>
+
+                {detailsModal.application.status === 'rejected' && detailsModal.application.rejection_reason && (
+                  <div className="bg-red-50 border border-red-200 p-4 rounded-lg">
+                    <h4 className="text-sm font-semibold text-red-800 mb-2">Feedback from the hiring team</h4>
+                    <p className="text-sm text-red-900 whitespace-pre-line">{detailsModal.application.rejection_reason}</p>
+                  </div>
+                )}
 
                 {/* Experience & Education Level */}
                 {(detailsModal.application.experience_level || detailsModal.application.education_requirement) && (

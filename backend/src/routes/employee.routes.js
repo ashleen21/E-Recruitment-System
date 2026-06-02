@@ -5,6 +5,66 @@ const { authenticate, authorize } = require('../middleware/auth.middleware');
 const { uploadResume, uploadPhoto, uploadDocuments, handleUploadError } = require('../middleware/upload.middleware');
 const emailService = require('../services/email.service');
 const aiService = require('../services/ai.service');
+const skillDecayService = require('../services/skillDecay.service');
+const certificationExpiryService = require('../services/certificationExpiry.service');
+
+const fetchEmployeeDecayInputs = async (employeeId) => {
+    const resumeResult = await db.query(`
+        SELECT extracted_skills, extracted_experience
+        FROM resumes
+        WHERE employee_id = $1
+        ORDER BY is_primary DESC, created_at DESC
+        LIMIT 1
+    `, [employeeId]);
+
+    const profileResult = await db.query(`
+        SELECT
+            (SELECT json_agg(json_build_object('name', s.name, 'proficiency', es.proficiency_level, 'years', es.years_of_experience))
+             FROM employee_skills es
+             JOIN skills s ON es.skill_id = s.id
+             WHERE es.employee_id = ep.id) AS skills,
+            (SELECT json_agg(json_build_object(
+                'title', we.job_title, 'company', we.company_name,
+                'startDate', we.start_date, 'endDate', we.end_date,
+                'isCurrent', we.is_current, 'description', we.description
+            ))
+             FROM work_experience we
+             WHERE we.employee_id = ep.id) AS work_experience,
+            (SELECT json_agg(json_build_object(
+                'name', c.name, 'issuer', c.issuing_organization,
+                'issue_date', c.issue_date, 'expiry_date', c.expiry_date
+            ))
+             FROM certifications c
+             WHERE c.employee_id = ep.id) AS certifications
+        FROM employee_profiles ep
+        WHERE ep.id = $1
+    `, [employeeId]);
+
+    const resumeRow = resumeResult.rows[0] || {};
+    const profileRow = profileResult.rows[0] || {};
+
+    const merged = skillDecayService.mergeSkillDecayInputs({
+        resumeSkills: resumeRow.extracted_skills || [],
+        resumeExperience: resumeRow.extracted_experience || [],
+        profileSkills: profileRow.skills || [],
+        profileExperience: profileRow.work_experience || []
+    });
+
+    return {
+        merged,
+        certifications: profileRow.certifications || []
+    };
+};
+
+const buildEmployeeSkillContext = (merged, certifications = []) => {
+    const decay = skillDecayService.calculateSkillDecay(merged.skills, merged.experience);
+    return {
+        skills: decay.skills || [],
+        summary: skillDecayService.summarizeDecay(decay.skills || []),
+        certifications: certificationExpiryService.evaluate(certifications),
+        source: merged.primarySource
+    };
+};
 
 // Helper: Extract text from an uploaded file (PDF, DOCX, images, text)
 async function extractTextFromFile(filePath) {
@@ -1170,7 +1230,32 @@ router.get('/my-applications', authenticate, authorize('employee'), async (req, 
             ORDER BY a.submitted_at DESC
         `, [employeeId]);
 
-        res.json(result.rows);
+        const sanitize = (row) => {
+            const {
+                resume_match_score,
+                resume_match_details,
+                resume_parsed_data,
+                ai_overall_score,
+                ai_skill_match_score,
+                ai_experience_match_score,
+                ai_education_match_score,
+                ai_cultural_fit_score,
+                ai_skill_gap_analysis,
+                ai_strengths,
+                ai_concerns,
+                ai_interview_questions,
+                ai_success_prediction,
+                ai_retention_prediction,
+                ai_recommendation,
+                ai_ranking,
+                screening_score,
+                auto_reject_reason,
+                ...safe
+            } = row;
+            return safe;
+        };
+
+        res.json(result.rows.map(sanitize));
 
     } catch (error) {
         console.error('Get my applications error:', error);
@@ -1704,17 +1789,134 @@ router.get('/career-paths', authenticate, authorize('employee'), async (req, res
         }
         const employeeId = employeeResult.rows[0].id;
 
+        const profileResult = await db.query(
+            'SELECT ai_career_path_recommendations FROM employee_profiles WHERE id = $1',
+            [employeeId]
+        );
+
+        const decayInputs = await fetchEmployeeDecayInputs(employeeId);
+        const liveSkillContext = buildEmployeeSkillContext(decayInputs.merged, decayInputs.certifications);
+
+        const stored = profileResult.rows[0]?.ai_career_path_recommendations;
+        if (stored) {
+            if (Array.isArray(stored) && stored.length > 0) {
+                return res.json({ recommendations: stored, skill_context: liveSkillContext });
+            }
+            if (stored.recommendations?.length > 0) {
+                return res.json({
+                    recommendations: stored.recommendations,
+                    skill_context: liveSkillContext
+                });
+            }
+        }
+
         const result = await db.query(`
             SELECT * FROM career_path_recommendations
             WHERE employee_id = $1
             ORDER BY success_probability DESC
         `, [employeeId]);
 
-        res.json(result.rows);
+        const recommendations = result.rows.map((row) => ({
+            role: row.recommended_role,
+            match_percentage: row.readiness_percentage,
+            readiness_score: row.readiness_percentage,
+            success_probability: row.success_probability,
+            estimated_time_months: row.timeline_months,
+            skill_gaps: row.skill_gaps || [],
+            training_recommendations: row.recommended_training || [],
+            explanation: row.ai_reasoning || '',
+            source: 'legacy',
+        }));
+
+        res.json({ recommendations, skill_context: liveSkillContext });
 
     } catch (error) {
         console.error('Get career paths error:', error);
         res.status(500).json({ error: 'Failed to fetch career paths' });
+    }
+});
+
+// Generate career path recommendations (self-service)
+router.post('/career-paths/generate', authenticate, authorize('employee'), async (req, res) => {
+    try {
+        const employeeResult = await db.query('SELECT id FROM employee_profiles WHERE user_id = $1', [req.user.id]);
+        if (employeeResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Profile not found' });
+        }
+        const employeeId = employeeResult.rows[0].id;
+
+        const employee = await db.query(`
+            SELECT ep.*,
+                   (SELECT json_agg(json_build_object('name', s.name, 'proficiency', es.proficiency_level, 'years', es.years_of_experience))
+                    FROM employee_skills es JOIN skills s ON es.skill_id = s.id WHERE es.employee_id = ep.id) as skills,
+                   (SELECT json_agg(json_build_object('degree', er.degree_type, 'degree_type', er.degree_type, 'field_of_study', er.field_of_study, 'institution', er.institution_name))
+                    FROM education_records er WHERE er.employee_id = ep.id) as education,
+                   (SELECT json_agg(json_build_object('name', t.training_name, 'date', t.completion_date))
+                    FROM training_records t WHERE t.employee_id = ep.id AND t.status = 'completed') as training,
+                   (SELECT json_agg(json_build_object('title', we.job_title, 'company', we.company_name, 'startDate', we.start_date, 'endDate', we.end_date, 'isCurrent', we.is_current, 'description', we.description))
+                    FROM work_experience we WHERE we.employee_id = ep.id) as work_experience,
+                   (SELECT json_agg(json_build_object('name', c.name, 'issuer', c.issuing_organization, 'issue_date', c.issue_date, 'expiry_date', c.expiry_date))
+                    FROM certifications c WHERE c.employee_id = ep.id) as certifications
+            FROM employee_profiles ep
+            WHERE ep.id = $1
+        `, [employeeId]);
+
+        if (employee.rows.length === 0) {
+            return res.status(404).json({ error: 'Employee not found' });
+        }
+
+        const employeeRow = employee.rows[0];
+        const decayInputs = await fetchEmployeeDecayInputs(employeeId);
+        employeeRow.skills = decayInputs.merged.skills.map((name) => ({ name }));
+        employeeRow.work_experience = decayInputs.merged.experience;
+        employeeRow.certifications = decayInputs.certifications;
+
+        const recommendations = await aiService.generateCareerPaths(employeeRow);
+        const skillContext = buildEmployeeSkillContext(decayInputs.merged, decayInputs.certifications);
+
+        await db.query('DELETE FROM career_path_recommendations WHERE employee_id = $1', [employeeId]);
+
+        for (const rec of recommendations) {
+            await db.query(`
+                INSERT INTO career_path_recommendations (
+                    employee_id, recommended_role, department, timeline_months,
+                    readiness_percentage, required_skills, skill_gaps,
+                    recommended_training, success_probability, ai_reasoning
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            `, [
+                employeeId,
+                rec.role,
+                employee.rows[0].department,
+                rec.estimated_time_months,
+                rec.readiness_score,
+                JSON.stringify([]),
+                JSON.stringify(rec.skill_gaps || []),
+                JSON.stringify(rec.training_recommendations || []),
+                rec.success_probability,
+                rec.explanation
+            ]);
+        }
+
+        await db.query(`
+            UPDATE employee_profiles SET
+                ai_career_path_recommendations = $1,
+                ai_skill_gap_analysis = $2
+            WHERE id = $3
+        `, [
+            JSON.stringify({ recommendations, skill_context: skillContext }),
+            JSON.stringify(recommendations[0]?.skill_gaps || []),
+            employeeId
+        ]);
+
+        res.json({
+            message: 'Career paths generated',
+            recommendations,
+            skill_context: skillContext
+        });
+    } catch (error) {
+        console.error('Generate career paths error:', error);
+        res.status(500).json({ error: 'Failed to generate career paths' });
     }
 });
 

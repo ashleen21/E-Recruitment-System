@@ -39,6 +39,7 @@ import EmployeeProfile from './pages/employee/Profile';
 import InternalOpportunities from './pages/employee/InternalOpportunities';
 import EmployeeMyApplications from './pages/employee/MyApplications';
 import EmployeeMyInterviews from './pages/employee/MyInterviews';
+import CareerPath from './pages/employee/CareerPath';
 
 // Protected Route Component
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -137,6 +138,7 @@ function App() {
         <Route path="/employee/opportunities" element={<InternalOpportunities />} />
         <Route path="/employee/applications" element={<EmployeeMyApplications />} />
         <Route path="/employee/interviews" element={<EmployeeMyInterviews />} />
+        <Route path="/employee/career-path" element={<CareerPath />} />
       </Route>
 
       {/* Root redirect - Always start at login */}

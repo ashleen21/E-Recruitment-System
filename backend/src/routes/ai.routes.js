@@ -149,6 +149,12 @@ router.post('/career-paths/:employeeId', authenticate, authorize('admin', 'hr_ma
             SELECT ep.*,
                    (SELECT json_agg(json_build_object('name', s.name, 'proficiency', es.proficiency_level, 'years', es.years_of_experience))
                     FROM employee_skills es JOIN skills s ON es.skill_id = s.id WHERE es.employee_id = ep.id) as skills,
+                   (SELECT json_agg(json_build_object('degree', er.degree_type, 'degree_type', er.degree_type, 'field_of_study', er.field_of_study, 'institution', er.institution_name))
+                    FROM education_records er WHERE er.employee_id = ep.id) as education,
+                   (SELECT json_agg(json_build_object('job_title', we.job_title, 'company', we.company_name, 'startDate', we.start_date, 'endDate', we.end_date, 'isCurrent', we.is_current))
+                    FROM work_experience we WHERE we.employee_id = ep.id) as work_experience,
+                   (SELECT json_agg(json_build_object('name', c.name, 'issuer', c.issuing_organization, 'issue_date', c.issue_date, 'expiry_date', c.expiry_date))
+                    FROM certifications c WHERE c.employee_id = ep.id) as certifications,
                    (SELECT json_agg(json_build_object('name', t.training_name, 'date', t.completion_date))
                     FROM training_records t WHERE t.employee_id = ep.id AND t.status = 'completed') as training
             FROM employee_profiles ep
@@ -173,10 +179,16 @@ router.post('/career-paths/:employeeId', authenticate, authorize('admin', 'hr_ma
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             `, [
-                employeeId, rec.role, rec.department, rec.timelineMonths,
-                rec.readinessPercentage, JSON.stringify(rec.requiredSkills),
-                JSON.stringify(rec.skillGaps), JSON.stringify(rec.recommendedTraining),
-                rec.successProbability, rec.reasoning
+                employeeId,
+                rec.role,
+                employee.rows[0].department,
+                rec.estimated_time_months,
+                rec.readiness_score,
+                JSON.stringify([]),
+                JSON.stringify(rec.skill_gaps || []),
+                JSON.stringify(rec.training_recommendations || []),
+                rec.success_probability,
+                rec.explanation
             ]);
         }
 
@@ -186,7 +198,7 @@ router.post('/career-paths/:employeeId', authenticate, authorize('admin', 'hr_ma
                 ai_career_path_recommendations = $1,
                 ai_skill_gap_analysis = $2
             WHERE id = $3
-        `, [JSON.stringify(recommendations), JSON.stringify(recommendations[0]?.skillGaps || []), employeeId]);
+        `, [JSON.stringify(recommendations), JSON.stringify(recommendations[0]?.skill_gaps || []), employeeId]);
 
         res.json({
             message: 'Career paths generated',

@@ -416,6 +416,7 @@ CREATE TABLE applications (
     screening_score DECIMAL(5,2),
     is_auto_rejected BOOLEAN DEFAULT FALSE,
     auto_reject_reason TEXT,
+    rejection_reason TEXT,
     
     -- HR Actions
     reviewed_by UUID REFERENCES users(id),

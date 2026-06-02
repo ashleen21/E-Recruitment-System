@@ -4,6 +4,8 @@ const db = require('../config/database');
 const fs = require('fs');
 const path = require('path');
 const pdfParse = require('pdf-parse');
+const skillDecayService = require('./skillDecay.service');
+const certificationExpiryService = require('./certificationExpiry.service');
 
 // Initialize OpenAI (if API key is provided)
 let openai = null;
@@ -169,7 +171,9 @@ class AIService {
             const jobRequirements = {
                 required_skills: job.required_skills || [],
                 min_experience_years: job.min_experience_years || 0,
-                education_level: job.education_requirement || ''
+                education_level: job.education_requirement || '',
+                job_description: job.description || '',
+                job_requirements_text: job.requirements || ''
             };
 
             // Use the resume parser service (GPT-4o-mini) — single scoring engine
@@ -705,6 +709,128 @@ class AIService {
         const currentSkills = employee.skills || [];
         const currentRole = employee.job_title;
         const department = employee.department;
+        const skillNames = currentSkills.map(s => s.name).filter(Boolean);
+        const educationRecords = employee.education || [];
+        const yearsOfExperience = employee.years_of_experience || null;
+        const workExperience = employee.work_experience || [];
+        const certifications = employee.certifications || [];
+
+        const skillDecay = skillDecayService.calculateSkillDecay(skillNames, workExperience);
+        const skillFreshnessSummary = skillDecayService.summarizeDecay(skillDecay.skills || []);
+        const certificationStatus = certificationExpiryService.evaluate(certifications);
+
+        const educationLevel = (() => {
+            const hierarchy = {
+                'high_school': 1,
+                'certificate': 2,
+                'diploma': 3,
+                'associate': 4,
+                'bachelor': 5,
+                'master': 6,
+                'doctorate': 7,
+                'phd': 7
+            };
+
+            const normalize = (value) => {
+                const v = (value || '').toLowerCase();
+                if (v.includes('phd') || v.includes('doctor')) return 'doctorate';
+                if (v.includes('master') || v.includes('mba')) return 'master';
+                if (v.includes('bachelor') || v.includes('degree')) return 'bachelor';
+                if (v.includes('associate')) return 'associate';
+                if (v.includes('diploma')) return 'diploma';
+                if (v.includes('certificate') || v.includes('cert')) return 'certificate';
+                if (v.includes('high school') || v.includes('secondary') || v.includes('gcse')) return 'high_school';
+                return null;
+            };
+
+            let best = null;
+            for (const record of educationRecords) {
+                const candidate = normalize(record.degree_type || record.degree || record.field_of_study);
+                if (candidate && (!best || hierarchy[candidate] > hierarchy[best])) {
+                    best = candidate;
+                }
+            }
+            return best || null;
+        })();
+
+        if (openai) {
+            try {
+                const internalJobs = await db.query(`
+                    SELECT title, department, required_skills, min_experience_years, education_requirement, description
+                    FROM jobs
+                    WHERE status = 'published' AND is_internal_only = true
+                    ORDER BY created_at DESC
+                    LIMIT 15
+                `);
+
+                const jobRows = internalJobs.rows || [];
+                const employeePayload = {
+                    current_role: currentRole,
+                    department,
+                    skills: skillNames,
+                    years_of_experience: yearsOfExperience,
+                    education_level: educationLevel,
+                    skill_freshness: skillDecay.skills || [],
+                    skill_freshness_summary: skillFreshnessSummary,
+                    certifications: certificationStatus
+                };
+
+                const basePrompt = jobRows.length > 0
+                    ? 'You are a career development advisor. Based on the employee profile and these available internal job postings generate personalised career path recommendations showing which internal roles best match this employee.'
+                    : 'You are a career development advisor. There are no internal job postings available. Based on the employee profile and general industry career progression standards recommend the 3 most logical next roles for this employee.';
+
+                const prompt = `${basePrompt}
+
+EMPLOYEE PROFILE:
+${JSON.stringify(employeePayload)}
+
+${jobRows.length > 0 ? `INTERNAL JOB POSTINGS:
+${JSON.stringify(jobRows)}` : ''}
+
+Return ONLY a JSON object in this exact format:
+{
+  "recommendations": [
+    {
+      "role": "string",
+      "match_percentage": number,
+      "readiness_score": number,
+      "success_probability": number,
+      "estimated_time_months": number,
+      "skill_gaps": ["string"],
+      "training_recommendations": ["string"],
+      "explanation": "string"
+    }
+  ]
+}`;
+
+                const response = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.2,
+                    max_tokens: 1400,
+                    response_format: { type: 'json_object' }
+                });
+
+                const parsed = JSON.parse(response.choices[0].message.content);
+                const recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+
+                if (recommendations.length > 0) {
+                    return recommendations.map(rec => ({
+                        role: rec.role || 'Career Path',
+                        match_percentage: Math.max(0, Math.min(100, Number(rec.match_percentage) || 0)),
+                        readiness_score: Math.max(0, Math.min(100, Number(rec.readiness_score) || 0)),
+                        success_probability: Math.max(0, Math.min(1, Number(rec.success_probability) || 0)),
+                        estimated_time_months: Math.max(0, Number(rec.estimated_time_months) || 0),
+                        skill_gaps: Array.isArray(rec.skill_gaps) ? rec.skill_gaps : [],
+                        training_recommendations: Array.isArray(rec.training_recommendations) ? rec.training_recommendations : [],
+                        explanation: rec.explanation || '',
+                        source: 'ai'
+                    }));
+                }
+            } catch (error) {
+                console.error('OpenAI career path error:', error.message);
+            }
+        }
 
         // Define potential career paths
         const careerPaths = [
@@ -738,15 +864,26 @@ class AIService {
         ];
 
         // Calculate skill gaps for each path
-        return careerPaths.map(path => ({
-            ...path,
-            skillGaps: path.requiredSkills.filter(rs => 
+        return careerPaths.map(path => {
+            const skillGaps = path.requiredSkills.filter(rs =>
                 !currentSkills.some(cs => cs.name?.toLowerCase() === rs.toLowerCase())
-            ),
-            recommendedTraining: path.requiredSkills
+            );
+            const training = path.requiredSkills
                 .filter(rs => !currentSkills.some(cs => cs.name?.toLowerCase() === rs.toLowerCase()))
-                .map(skill => ({ skill, course: `${skill} Fundamentals`, provider: 'Internal Training' }))
-        }));
+                .map(skill => `${skill} Fundamentals`);
+
+            return {
+                role: path.role,
+                match_percentage: Math.max(0, Math.min(100, path.readinessPercentage || 50)),
+                readiness_score: Math.max(0, Math.min(100, path.readinessPercentage || 50)),
+                success_probability: Math.max(0, Math.min(1, path.successProbability || 0.6)),
+                estimated_time_months: path.timelineMonths || 12,
+                skill_gaps: skillGaps,
+                training_recommendations: training,
+                explanation: path.reasoning,
+                source: 'fallback'
+            };
+        });
     }
 
     // Predict hiring outcome
@@ -852,6 +989,237 @@ class AIService {
         }
 
         return defaultQuestions;
+    }
+
+    buildRejectionGapAnalysis(resumeData = {}, jobRequirements = {}, storedMatchDetails = null) {
+        const resumeParser = require('./resumeParser.service');
+        const parsedResume = {
+            skills: resumeData.skills || [],
+            experience: resumeData.experience || [],
+            education: resumeData.education || []
+        };
+        const jobReq = {
+            required_skills: jobRequirements.required_skills || [],
+            min_experience_years: jobRequirements.min_experience_years || 0,
+            education_level: jobRequirements.education_requirement || jobRequirements.education_level || '',
+            job_description: jobRequirements.description || '',
+            job_requirements_text: jobRequirements.requirements || ''
+        };
+
+        const match = resumeParser.calculateJobMatchScoreBasic(parsedResume, jobReq);
+        const requiredExp = jobReq.min_experience_years || 0;
+        const requiredEducation = jobReq.education_level || '';
+
+        let candidateExpYears = 0;
+        if (Array.isArray(parsedResume.experience)) {
+            parsedResume.experience.forEach((exp) => {
+                if (exp.startDate || exp.start_date) {
+                    const start = new Date(exp.startDate || exp.start_date);
+                    const endRaw = exp.endDate || exp.end_date || (exp.isCurrent || exp.is_current ? 'Present' : null);
+                    const end = !endRaw || endRaw === 'Present' ? new Date() : new Date(endRaw);
+                    if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime())) {
+                        candidateExpYears += (end - start) / (1000 * 60 * 60 * 24 * 365);
+                    }
+                }
+            });
+            candidateExpYears = Math.round(candidateExpYears * 10) / 10;
+        } else if (parsedResume.experience?.totalYears) {
+            candidateExpYears = parsedResume.experience.totalYears;
+        }
+
+        const skillGaps = [
+            ...(storedMatchDetails?.skillsMatch?.missing || []),
+            ...(match.skillsMatch?.missing || [])
+        ].filter(Boolean);
+        const uniqueSkillGaps = [...new Set(skillGaps.map((s) => (typeof s === 'string' ? s : s.name || '').trim()).filter(Boolean))];
+
+        const matchedSkills = [
+            ...(storedMatchDetails?.skillsMatch?.matched || []),
+            ...(match.skillsMatch?.matched || [])
+        ].filter(Boolean);
+        const uniqueMatched = [...new Set(matchedSkills.map((s) => (typeof s === 'string' ? s : s.name || '').trim()).filter(Boolean))];
+
+        const experienceGaps = [];
+        if (requiredExp > 0 && candidateExpYears < requiredExp) {
+            experienceGaps.push(
+                `The role calls for approximately ${requiredExp}+ years of relevant experience; your profile reflects about ${candidateExpYears} years in comparable roles.`
+            );
+        }
+        (storedMatchDetails?.experienceMatch?.gaps || []).forEach((g) => {
+            if (g && !experienceGaps.includes(g)) experienceGaps.push(g);
+        });
+        if (experienceGaps.length === 0 && match.experienceMatch?.details && candidateExpYears < requiredExp) {
+            const detail = match.experienceMatch.details.replace(/\d+%/g, '').trim();
+            if (detail) experienceGaps.push(detail);
+        }
+
+        const educationGaps = [];
+        const eduDetail = storedMatchDetails?.educationMatch?.details || match.educationMatch?.details || '';
+        const eduMeets = storedMatchDetails?.educationMatch?.meetsRequirement ?? match.educationMatch?.meetsRequirement;
+        if (requiredEducation && eduMeets === false) {
+            educationGaps.push(
+                eduDetail || `The role requires ${requiredEducation}; your highest qualification does not fully meet that requirement.`
+            );
+        } else if (requiredEducation && eduDetail && /below|does not meet|not found|significantly/i.test(eduDetail)) {
+            educationGaps.push(eduDetail.replace(/\d+%/g, '').trim());
+        }
+
+        return {
+            skillGaps: uniqueSkillGaps,
+            matchedSkills: uniqueMatched.slice(0, 6),
+            experienceGaps,
+            educationGaps,
+            requiredExperienceYears: requiredExp,
+            candidateExperienceYears: candidateExpYears,
+            requiredEducation,
+            hasMaterialGaps: uniqueSkillGaps.length > 0 || experienceGaps.length > 0 || educationGaps.length > 0
+        };
+    }
+
+    sanitizeRejectionBody(text) {
+        if (!text || typeof text !== 'string') return text;
+
+        const placeholderLine = /^\s*\[?\s*(your\s+name|your\s+position|company\s+name|contact\s+information)\s*\]?\s*$/i;
+
+        let cleaned = text
+            .split('\n')
+            .filter((line) => !placeholderLine.test(line.trim()))
+            .join('\n');
+
+        cleaned = cleaned
+            .replace(/\s*\[Your Name\]\s*/gi, '')
+            .replace(/\s*\[Your Position\]\s*/gi, '')
+            .replace(/\s*\[Company Name\]\s*/gi, '')
+            .replace(/\s*\[Contact Information\]\s*/gi, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+        return cleaned;
+    }
+
+    buildPoliteRejectionFallback(name, role, gapAnalysis) {
+        const parts = [];
+        parts.push(`Hi ${name},`);
+        parts.push('');
+        parts.push(`Thank you sincerely for your interest in the ${role} position and for the time you invested in your application. After a thoughtful review, we will not be moving forward with your candidacy at this time, as we are progressing with applicants whose backgrounds align more closely with the role's current needs.`);
+        parts.push('');
+
+        if (gapAnalysis.skillGaps?.length > 0) {
+            parts.push(`Skills alignment: We identified areas where the role requires stronger coverage in ${gapAnalysis.skillGaps.slice(0, 4).join(', ')}. Developing hands-on experience in these areas would strengthen your profile for similar roles in the future.`);
+        }
+        if (gapAnalysis.experienceGaps?.length > 0) {
+            parts.push(`Experience alignment: ${gapAnalysis.experienceGaps[0]}`);
+        }
+        if (gapAnalysis.educationGaps?.length > 0) {
+            parts.push(`Education alignment: ${gapAnalysis.educationGaps[0]}`);
+        }
+        if (gapAnalysis.matchedSkills?.length > 0) {
+            parts.push('');
+            parts.push(`We did note positive alignment in areas such as ${gapAnalysis.matchedSkills.slice(0, 3).join(', ')}, and we encourage you to continue building on those strengths.`);
+        }
+
+        parts.push('');
+        parts.push('We genuinely appreciate your effort and wish you every success in your career journey. Please feel welcome to apply again when you feel your experience has grown closer to the role requirements.');
+        parts.push('');
+        parts.push('Warm regards,');
+        parts.push('The Recruitment Team');
+
+        return parts.join('\n');
+    }
+
+    async generateRejectionDraft(payload = {}) {
+        const {
+            candidateName,
+            jobTitle,
+            jobRequirements,
+            resumeData,
+            interviewFeedback,
+            matchDetails,
+            stage
+        } = payload;
+
+        const safeJobRequirements = jobRequirements || {};
+        const safeResumeData = resumeData || {};
+        const safeFeedback = interviewFeedback || [];
+        const name = candidateName || 'Candidate';
+        const role = jobTitle || 'the role';
+        const stageLabel = stage || 'screening';
+
+        const gapAnalysis = this.buildRejectionGapAnalysis(safeResumeData, safeJobRequirements, matchDetails);
+
+        if (openai) {
+            const prompt = `You are a compassionate HR professional writing a personalized rejection message.
+
+CANDIDATE NAME: ${name}
+ROLE: ${role}
+STAGE: ${stageLabel}
+
+GAP ANALYSIS — use this as the primary factual basis for the message (explain the decision through these gaps):
+- Skill gaps (required but not evidenced on CV): ${gapAnalysis.skillGaps.length > 0 ? gapAnalysis.skillGaps.join(', ') : 'None identified from required skills list'}
+- Experience gaps: ${gapAnalysis.experienceGaps.length > 0 ? gapAnalysis.experienceGaps.join(' | ') : 'Candidate experience appears broadly aligned with years required'}
+- Education gaps: ${gapAnalysis.educationGaps.length > 0 ? gapAnalysis.educationGaps.join(' | ') : 'Education appears aligned with role requirement'}
+- Strengths to acknowledge briefly (optional, 1 sentence): ${gapAnalysis.matchedSkills.length > 0 ? gapAnalysis.matchedSkills.join(', ') : 'General appreciation for their application'}
+
+JOB REQUIREMENTS (reference only):
+${JSON.stringify({
+    required_skills: safeJobRequirements.required_skills,
+    min_experience_years: safeJobRequirements.min_experience_years,
+    education_requirement: safeJobRequirements.education_requirement,
+    description: (safeJobRequirements.description || '').substring(0, 500)
+}).substring(0, 2000)}
+
+CANDIDATE CV SUMMARY (skills, experience, education — reference only):
+${JSON.stringify({
+    skills: (safeResumeData.skills || []).slice(0, 30),
+    experience: (safeResumeData.experience || []).slice(0, 8),
+    education: (safeResumeData.education || []).slice(0, 5)
+}).substring(0, 2500)}
+
+INTERVIEW FEEDBACK (post-interview stage only — weave in gently if present, never quote scores):
+${JSON.stringify(safeFeedback).substring(0, 2000)}
+
+WRITING RULES:
+- Tone: warm, respectful, empathetic, professional — NEVER harsh, cold, dismissive, or judgmental
+- Structure the body around skill gap, experience gap, and education gap (when each exists) as clear but kind reasons
+- Frame gaps as fit with role requirements, not personal shortcomings
+- Do NOT mention match scores, percentages, rankings, weights, AI, or internal screening systems
+- Include 1–2 brief, constructive suggestions for growth
+- Thank them for their time; leave the door open for future applications
+- Body length: about 150–280 words
+- Sign off with only "Warm regards," or "Best regards," then "The Recruitment Team" — NEVER use placeholders such as [Your Name], [Your Position], [Company Name], or [Contact Information]
+- Output JSON only
+
+Return JSON:
+{
+  "subject": "polite email subject line",
+  "body": "full message body with greeting and sign-off"
+}`;
+
+            try {
+                const response = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.35,
+                    max_tokens: 900,
+                    response_format: { type: 'json_object' }
+                });
+
+                const parsed = JSON.parse(response.choices[0].message.content);
+                if (parsed?.body) {
+                    return {
+                        subject: parsed.subject || `Update on your ${role} application`,
+                        body: this.sanitizeRejectionBody(parsed.body)
+                    };
+                }
+            } catch (error) {
+                console.error('OpenAI rejection draft error:', error.message);
+            }
+        }
+
+        return {
+            subject: `Update on your ${role} application`,
+            body: this.sanitizeRejectionBody(this.buildPoliteRejectionFallback(name, role, gapAnalysis))
+        };
     }
 
     // Find matching internal candidates for a job

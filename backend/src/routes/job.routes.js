@@ -813,6 +813,7 @@ router.post('/:id/distribute', authenticate, authorize('admin', 'hr_manager'), a
             return res.status(400).json({ error: 'Please select at least one platform' });
         }
 
+        // Fetch job with ALL details for flyer generation
         const job = await db.query('SELECT * FROM jobs WHERE id = $1', [id]);
         if (job.rows.length === 0) {
             return res.status(404).json({ error: 'Job not found' });
@@ -822,7 +823,21 @@ router.post('/:id/distribute', authenticate, authorize('admin', 'hr_manager'), a
             return res.status(400).json({ error: 'Job must be published before distribution' });
         }
 
-        const results = await jobDistributionService.distributeJob(job.rows[0], platforms);
+        // Also fetch related skills with names
+        const skillsResult = await db.query(`
+            SELECT s.name, js.is_required, js.min_proficiency 
+            FROM job_skills js 
+            JOIN skills s ON js.skill_id = s.id 
+            WHERE js.job_id = $1
+        `, [id]);
+        
+        // Enrich job data with skill names for flyer
+        const jobData = {
+            ...job.rows[0],
+            skill_names: skillsResult.rows.map(s => s.name)
+        };
+
+        const results = await jobDistributionService.distributeJob(jobData, platforms);
 
         // Store distribution records in database
         const successful = [];

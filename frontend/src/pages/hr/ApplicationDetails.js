@@ -34,10 +34,23 @@ const ApplicationDetails = () => {
   const { id } = useParams();
   const queryClient = useQueryClient();
   const [showResumeModal, setShowResumeModal] = useState(false);
+  const [rejectionModal, setRejectionModal] = useState({ show: false, subject: '', body: '' });
 
   const { data: application, isLoading } = useQuery({
     queryKey: ['application', id],
     queryFn: () => applicationsAPI.getById(id),
+  });
+
+  const rejectionDraftMutation = useMutation({
+    mutationFn: () => applicationsAPI.getRejectionDraft(id),
+    onSuccess: (data) => {
+      setRejectionModal({
+        show: true,
+        subject: data?.data?.subject || `Update on your ${application?.data?.job_title || application?.job_title || 'application'}`,
+        body: data?.data?.body || ''
+      });
+    },
+    onError: () => toast.error('Failed to generate rejection draft'),
   });
 
   const statusMutation = useMutation({
@@ -46,7 +59,24 @@ const ApplicationDetails = () => {
       queryClient.invalidateQueries(['application', id]);
       toast.success('Status updated');
     },
-    onError: () => toast.error('Failed to update status'),
+    onError: (error) => {
+      if (error.response?.status === 409) {
+        toast.error(error.response?.data?.error || 'Use the rejection letter editor for interview-stage candidates.');
+        rejectionDraftMutation.mutate();
+        return;
+      }
+      toast.error(error.response?.data?.error || 'Failed to update status');
+    },
+  });
+
+  const rejectionSendMutation = useMutation({
+    mutationFn: ({ subject, body }) => applicationsAPI.sendRejection(id, { subject, body }),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['application', id]);
+      setRejectionModal({ show: false, subject: '', body: '' });
+      toast.success('Rejection email sent');
+    },
+    onError: () => toast.error('Failed to send rejection email'),
   });
 
   const matchScoreMutation = useMutation({
@@ -124,10 +154,62 @@ const ApplicationDetails = () => {
   // Handle both axios response wrapper and direct data
   const app = application?.data || application;
   const parsedResume = app?.parsed_resume;
+  const matchSource = app?.resume_match_details?.mlPowered
+    ? 'ml'
+    : app?.resume_match_details?.aiPowered
+      ? 'openai'
+      : app?.resume_match_details
+        ? 'rule'
+        : null;
   
   // Get resume URL from application or from parsed resume
   const resumeUrl = app?.resume_url || parsedResume?.resume_file_path;
   const resumeFilename = app?.resume_filename || parsedResume?.resume_filename || 'Resume';
+
+  const needsManualRejection = (app?.interviews?.length || 0) > 0 || ['interviewed', 'interview_scheduled'].includes(app?.status);
+
+  const openRejectionEditor = () => {
+    if (app?.rejection_reason) {
+      setRejectionModal({
+        show: true,
+        subject: `Update on your ${app?.job_title || 'application'}`,
+        body: app.rejection_reason
+      });
+      return;
+    }
+    rejectionDraftMutation.mutate();
+  };
+
+  const getFreshnessBadge = (skillName) => {
+    const freshnessList = app?.resume_match_details?.skillsFreshness || [];
+    const normalized = (skillName || '').toLowerCase();
+    const match = freshnessList.find((item) => {
+      const itemName = (item?.name || item?.normalized || '').toLowerCase();
+      return itemName === normalized || itemName.includes(normalized) || normalized.includes(itemName);
+    });
+    if (!match) return null;
+    const style = match.freshness === 'fresh'
+      ? 'bg-emerald-100 text-emerald-700'
+      : match.freshness === 'aging'
+        ? 'bg-amber-100 text-amber-700'
+        : 'bg-red-100 text-red-700';
+    const label = match.freshness === 'fresh' ? 'Fresh' : match.freshness === 'aging' ? 'Aging' : 'Stale';
+    return { style, label, yearsSinceUsed: match.yearsSinceUsed };
+  };
+
+  const getCertStatusStyle = (status) => {
+    if (status === 'Expired') return 'bg-red-100 text-red-700';
+    if (status === 'Expiring Soon') return 'bg-amber-100 text-amber-700';
+    return 'bg-emerald-100 text-emerald-700';
+  };
+
+  const resolveCertStatus = (cert) => {
+    const certName = typeof cert === 'string' ? cert : (cert?.name || '');
+    const fromApi = (app?.certification_status || []).find((c) =>
+      (c?.name || '').toLowerCase() === certName.toLowerCase()
+    );
+    return fromApi?.status || 'Valid';
+  };
 
   return (
     <div>
@@ -152,19 +234,37 @@ const ApplicationDetails = () => {
               Withdrawn
             </span>
           ) : (
-            <select
-              value={app?.status}
-              onChange={(e) => statusMutation.mutate(e.target.value)}
-              className="btn-primary cursor-pointer"
-            >
-              <option value="pending">Pending</option>
-              <option value="under_review">Under Review</option>
-              <option value="shortlisted">Shortlisted</option>
-              <option value="interview_scheduled">Interview Scheduled</option>
-              <option value="offer_extended">Offer Extended</option>
-              <option value="rejected">Rejected</option>
-              <option value="hired">Hired</option>
-            </select>
+            <>
+              <select
+                value={app?.status === 'submitted' ? 'submitted' : app?.status}
+                onChange={(e) => {
+                  const nextStatus = e.target.value;
+                  if (nextStatus === 'rejected' && needsManualRejection) {
+                    openRejectionEditor();
+                    return;
+                  }
+                  statusMutation.mutate(nextStatus);
+                }}
+                className="btn-primary cursor-pointer"
+              >
+                <option value="submitted">Submitted</option>
+                <option value="under_review">Under Review</option>
+                <option value="shortlisted">Shortlisted</option>
+                <option value="interview_scheduled">Interview Scheduled</option>
+                <option value="offer_extended">Offer Extended</option>
+                <option value="rejected">Rejected</option>
+                <option value="hired">Hired</option>
+              </select>
+              {app?.status === 'rejected' && needsManualRejection && (
+                <button
+                  onClick={openRejectionEditor}
+                  className="btn-secondary flex items-center"
+                >
+                  <EnvelopeIcon className="h-5 w-5 mr-2" />
+                  Edit Rejection Letter
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -196,6 +296,15 @@ const ApplicationDetails = () => {
                 <div className="flex items-center justify-between p-4 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-lg">
                   <div>
                     <p className="text-sm text-gray-600">Overall Match</p>
+                    {matchSource && (
+                      <span className={`inline-flex mt-1 px-2 py-0.5 rounded text-[10px] font-medium ${
+                        matchSource === 'ml' ? 'bg-emerald-100 text-emerald-700' :
+                        matchSource === 'openai' ? 'bg-indigo-100 text-indigo-700' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>
+                        {matchSource === 'ml' ? 'ML Score' : matchSource === 'openai' ? 'GPT Fallback' : 'Rule-Based'}
+                      </span>
+                    )}
                     {editingScore ? (
                       <div className="space-y-3">
                         <div className="flex items-center gap-2 mt-1">
@@ -330,9 +439,19 @@ const ApplicationDetails = () => {
                   <div className="p-3 bg-green-50 rounded-lg">
                     <p className="text-sm font-medium text-green-800 mb-2">Matched Skills</p>
                     <div className="flex flex-wrap gap-2">
-                      {app.resume_match_details.skillsMatch.matched.map((skill, idx) => (
-                        <span key={idx} className="px-2 py-1 bg-green-100 text-green-700 rounded text-xs">{skill}</span>
-                      ))}
+                      {app.resume_match_details.skillsMatch.matched.map((skill, idx) => {
+                        const freshness = getFreshnessBadge(skill);
+                        return (
+                          <span key={idx} className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 rounded text-xs">
+                            {skill}
+                            {freshness && (
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${freshness.style}`}>
+                                {freshness.label}
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -390,11 +509,11 @@ const ApplicationDetails = () => {
 
 
                 {/* AI Powered Badge */}
-                {app?.resume_match_details?.aiPowered && (
+                {matchSource && (
                   <div className="text-center">
                     <span className="inline-flex items-center gap-1 text-xs text-gray-500">
                       <SparklesIcon className="h-3 w-3" />
-                      AI-Powered Analysis
+                      {matchSource === 'ml' ? 'ML-Powered Match' : matchSource === 'openai' ? 'GPT-Powered Match' : 'Rule-Based Match'}
                     </span>
                   </div>
                 )}
@@ -650,6 +769,11 @@ const ApplicationDetails = () => {
                     <h4 className="font-medium text-gray-900 mb-3 flex items-center">
                       <SparklesIcon className="h-5 w-5 mr-2 text-purple-600" />
                       Extracted Skills
+                      {app?.skill_freshness_source && (
+                        <span className="ml-2 text-xs font-normal text-gray-500">
+                          (freshness: resume + profile)
+                        </span>
+                      )}
                     </h4>
                     <div className="flex flex-wrap gap-2">
                       {parsedResume.extracted_skills.map((skill, idx) => {
@@ -658,16 +782,22 @@ const ApplicationDetails = () => {
                           const rsName = typeof rs === 'string' ? rs : rs?.name || '';
                           return skillName.toLowerCase().includes(rsName.toLowerCase());
                         });
+                        const freshness = getFreshnessBadge(skillName);
                         return (
                           <span
                             key={idx}
-                            className={`px-3 py-1 rounded-full text-sm ${
+                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm ${
                               isMatched
                                 ? 'bg-green-100 text-green-800 border border-green-300'
                                 : 'bg-purple-100 text-purple-800'
                             }`}
                           >
                             {skillName}
+                            {freshness && (
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${freshness.style}`} title={freshness.yearsSinceUsed != null ? `${freshness.yearsSinceUsed}y since last used` : ''}>
+                                {freshness.label}
+                              </span>
+                            )}
                           </span>
                         );
                       })}
@@ -725,12 +855,21 @@ const ApplicationDetails = () => {
                       Certifications
                     </h4>
                     <div className="space-y-2">
-                      {parsedResume.extracted_certifications.map((cert, idx) => (
-                        <div key={idx} className="flex items-center gap-2">
-                          <CheckBadgeIcon className="h-4 w-4 text-green-600" />
-                          <span className="text-gray-900">{typeof cert === 'string' ? cert : cert.name}</span>
-                        </div>
-                      ))}
+                      {parsedResume.extracted_certifications.map((cert, idx) => {
+                        const certName = typeof cert === 'string' ? cert : cert.name;
+                        const status = resolveCertStatus(cert);
+                        return (
+                          <div key={idx} className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <CheckBadgeIcon className="h-4 w-4 text-green-600" />
+                              <span className="text-gray-900">{certName}</span>
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${getCertStatusStyle(status)}`}>
+                              {status}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -973,6 +1112,72 @@ const ApplicationDetails = () => {
           </div>
         </div>
       </div>
+
+      {/* Rejection letter modal (post-interview / manual send) */}
+      {rejectionModal.show && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex items-center justify-center min-h-screen px-4">
+            <div className="fixed inset-0 bg-black bg-opacity-50" onClick={() => setRejectionModal({ show: false, subject: '', body: '' })} />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Rejection Letter</h3>
+                <button
+                  onClick={() => setRejectionModal({ show: false, subject: '', body: '' })}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <XMarkIcon className="h-6 w-6" />
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                AI drafts a polite message based on skill, experience, and education gaps vs the job requirements. Review and edit before sending — scores are never included.
+              </p>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email subject</label>
+                <input
+                  type="text"
+                  value={rejectionModal.subject}
+                  onChange={(e) => setRejectionModal((prev) => ({ ...prev, subject: e.target.value }))}
+                  className="input-field w-full"
+                />
+              </div>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Message to candidate</label>
+                <textarea
+                  value={rejectionModal.body}
+                  onChange={(e) => setRejectionModal((prev) => ({ ...prev, body: e.target.value }))}
+                  rows={10}
+                  className="input-field w-full"
+                />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => rejectionDraftMutation.mutate()}
+                  disabled={rejectionDraftMutation.isPending}
+                  className="btn-secondary"
+                >
+                  {rejectionDraftMutation.isPending ? 'Generating...' : 'Regenerate Draft'}
+                </button>
+                <button
+                  onClick={() => setRejectionModal({ show: false, subject: '', body: '' })}
+                  className="btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => rejectionSendMutation.mutate({
+                    subject: rejectionModal.subject,
+                    body: rejectionModal.body
+                  })}
+                  disabled={rejectionSendMutation.isPending || !rejectionModal.body?.trim()}
+                  className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 disabled:opacity-50"
+                >
+                  {rejectionSendMutation.isPending ? 'Sending...' : 'Send Rejection'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Resume Preview Modal */}
       {showResumeModal && resumeUrl && (

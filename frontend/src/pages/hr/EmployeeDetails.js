@@ -19,8 +19,9 @@ import {
   XMarkIcon,
   ArrowDownTrayIcon,
   DocumentArrowDownIcon,
+  SparklesIcon,
 } from '@heroicons/react/24/outline';
-import { employeesAPI } from '../../services/api';
+import { aiAPI, employeesAPI } from '../../services/api';
 
 const EmployeeDetails = () => {
   const { id } = useParams();
@@ -46,6 +47,17 @@ const EmployeeDetails = () => {
     },
     onError: () => {
       toast.error('Failed to update employee');
+    },
+  });
+
+  const generateCareerPathsMutation = useMutation({
+    mutationFn: () => aiAPI.generateCareerPath(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['employee', id] });
+      toast.success('Career paths generated');
+    },
+    onError: () => {
+      toast.error('Failed to generate career paths');
     },
   });
 
@@ -554,24 +566,58 @@ const EmployeeDetails = () => {
       )}
 
       {/* Career Paths */}
-      {emp.career_paths && emp.career_paths.length > 0 && (
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">AI Career Path Recommendations</h3>
-          <div className="space-y-3">
-            {emp.career_paths.map((path, idx) => (
-              <div key={path.id || idx} className="p-3 bg-gray-50 rounded-lg">
-                <div className="flex justify-between items-center">
-                  <span className="font-medium text-gray-900">{path.role}</span>
-                  <div className="flex gap-3 text-sm">
-                    <span className="text-primary-600">Readiness: {path.readiness}%</span>
-                    <span className="text-green-600">Success: {(path.probability * 100).toFixed(0)}%</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+      <div className="card">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+          <h3 className="text-lg font-semibold text-gray-900">AI Career Path Recommendations</h3>
+          <button
+            onClick={() => generateCareerPathsMutation.mutate()}
+            disabled={generateCareerPathsMutation.isPending}
+            className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-primary-700 disabled:opacity-50 flex items-center gap-2"
+          >
+            <SparklesIcon className="h-4 w-4" />
+            {generateCareerPathsMutation.isPending ? 'Generating...' : 'Generate Career Paths'}
+          </button>
         </div>
-      )}
+        {(() => {
+          const aiPaths = Array.isArray(emp.ai_career_path_recommendations)
+            ? emp.ai_career_path_recommendations
+            : [];
+          const legacyPaths = Array.isArray(emp.career_paths) ? emp.career_paths : [];
+          const paths = aiPaths.length > 0 ? aiPaths : legacyPaths;
+
+          if (paths.length === 0) {
+            return <p className="text-gray-500 text-sm">No career path recommendations yet</p>;
+          }
+
+          return (
+            <div className="space-y-3">
+              {paths.map((path, idx) => {
+                const readiness = path.readiness_score ?? path.readiness;
+                const success = path.success_probability ?? path.probability;
+                const source = path.source || (aiPaths.length > 0 ? 'ai' : 'legacy');
+
+                return (
+                  <div key={path.id || idx} className="p-3 bg-gray-50 rounded-lg">
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900">{path.role}</span>
+                      </div>
+                      <div className="flex gap-3 text-sm">
+                        {readiness !== undefined && (
+                          <span className="text-primary-600">Readiness: {Math.round(readiness)}%</span>
+                        )}
+                        {success !== undefined && (
+                          <span className="text-green-600">Success: {Math.round(success * 100)}%</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </div>
     </div>
   );
 };

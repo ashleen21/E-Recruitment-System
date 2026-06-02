@@ -44,7 +44,44 @@ const JobDistribution = () => {
       // Handle results per platform
       results.forEach(result => {
         if (result.success) {
-          if (result.requiresManualShare && result.shareUrl) {
+          // LinkedIn with post text - show copy modal
+          if (result.platform === 'linkedin' && result.postText) {
+            toast((t) => (
+              <div className="max-w-md">
+                <p className="font-medium text-green-600 mb-2">✅ LinkedIn Post Ready!</p>
+                <div className="bg-gray-100 p-3 rounded text-sm max-h-40 overflow-y-auto whitespace-pre-wrap mb-3">
+                  {result.postText}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(result.postText);
+                      toast.success('Post copied to clipboard!');
+                    }}
+                    className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                  >
+                    📋 Copy Post
+                  </button>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(result.postText);
+                      window.open('https://www.linkedin.com/feed/?shareActive=true', '_blank');
+                      toast.dismiss(t.id);
+                    }}
+                    className="px-3 py-1 bg-blue-800 text-white rounded text-sm hover:bg-blue-900"
+                  >
+                    Open LinkedIn
+                  </button>
+                  <button
+                    onClick={() => toast.dismiss(t.id)}
+                    className="px-3 py-1 bg-gray-300 text-gray-700 rounded text-sm hover:bg-gray-400"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ), { duration: 30000 });
+          } else if (result.requiresManualShare && result.shareUrl) {
             // Show flyer download link if available (for X/Twitter with flyer)
             if (result.flyerUrl) {
               toast((t) => (
@@ -118,7 +155,6 @@ const JobDistribution = () => {
     { id: 'linkedin', name: 'LinkedIn', icon: '💼', color: 'bg-blue-700' },
     { id: 'facebook', name: 'Facebook', icon: '📘', color: 'bg-blue-600' },
     { id: 'twitter', name: 'X (Twitter)', icon: '𝕏', color: 'bg-black' },
-    { id: 'company_website', name: 'Company Website', icon: '🌐', color: 'bg-gray-600' },
   ];
 
   const handleDistribute = () => {

@@ -81,6 +81,8 @@ export const applicationsAPI = {
   updateMatchScore: (id, score, comment) => api.put(`/applications/${id}/match-score`, { score, comment }),
   bulkCalculateMatchScore: (applicationIds) => api.post('/applications/bulk-match-score', { applicationIds }),
   reparseResume: (id) => api.post(`/applications/${id}/reparse-resume`),
+  getRejectionDraft: (id) => api.post(`/applications/${id}/rejection-draft`),
+  sendRejection: (id, data) => api.post(`/applications/${id}/rejection-send`, data),
 };
 
 // Candidates API
@@ -145,6 +147,7 @@ export const employeesAPI = {
   saveJob: (jobId) => api.post('/employees/save-job', { jobId }),
   getSavedJobs: () => api.get('/employees/saved-jobs'),
   getCareerPaths: () => api.get('/employees/career-paths'),
+  generateCareerPaths: () => api.post('/employees/career-paths/generate'),
   getSkillGap: (targetRole) => api.get(`/employees/skill-gap/${targetRole}`),
   // Skills
   addSkill: (data) => api.post('/employees/skills', data),
@@ -250,7 +253,7 @@ export const skillsAPI = {
 export const aiAPI = {
   screenCandidate: (applicationId) => api.post(`/ai/screen/${applicationId}`),
   matchInternal: (employeeId) => api.get(`/ai/match-internal/${employeeId}`),
-  generateCareerPath: (employeeId) => api.get(`/ai/career-path/${employeeId}`),
+  generateCareerPath: (employeeId) => api.post(`/ai/career-paths/${employeeId}`),
   predictOutcome: (applicationId) => api.get(`/ai/predict/${applicationId}`),
   generateQuestions: (jobId) => api.get(`/ai/interview-questions/${jobId}`),
   // Predictive Models

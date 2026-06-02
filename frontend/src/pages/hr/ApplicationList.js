@@ -73,7 +73,12 @@ const ApplicationList = () => {
       setSelectedIds([]);
       setShowRejectModal(false);
       setRejectReason('');
-      toast.success(`${data.data.updated} applications rejected`);
+      const manualCount = data.data?.manualRequired?.length || 0;
+      if (manualCount > 0) {
+        toast.success(`${data.data.updated} rejected. ${manualCount} interview-stage candidate(s) need a manual rejection letter in Application Details.`);
+      } else {
+        toast.success(`${data.data.updated} applications rejected`);
+      }
     },
     onError: () => toast.error('Failed to reject applications'),
   });
@@ -318,7 +323,7 @@ const ApplicationList = () => {
             className="input-field w-auto"
           >
             <option value="">All Status</option>
-            <option value="pending">Pending</option>
+            <option value="submitted">Submitted</option>
             <option value="under_review">Under Review</option>
             <option value="shortlisted">Shortlisted</option>
             <option value="interview_scheduled">Interview Scheduled</option>
@@ -427,7 +432,7 @@ const ApplicationList = () => {
                         className={`px-2.5 py-1 rounded-full text-xs font-medium border-0 cursor-pointer ${getStatusBadge(app.status)}`}
                       >
                         <option value="submitted">Submitted</option>
-                        <option value="pending">Pending</option>
+                        <option value="submitted">Submitted</option>
                         <option value="under_review">Under Review</option>
                         <option value="shortlisted">Shortlisted</option>
                         <option value="interview_scheduled">Interview Scheduled</option>

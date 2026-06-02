@@ -6,6 +6,165 @@ const { uploadResume, handleUploadError } = require('../middleware/upload.middle
 const aiService = require('../services/ai.service');
 const emailService = require('../services/email.service');
 const resumeParser = require('../services/resumeParser.service');
+const certificationExpiryService = require('../services/certificationExpiry.service');
+const skillDecayService = require('../services/skillDecay.service');
+
+const attachSkillFreshness = async (application) => {
+    const parsed = application.parsed_resume || {};
+    let profileSkills = application.skills || [];
+    let profileExperience = application.experience || [];
+
+    if (application.employee_id) {
+        const profileResult = await db.query(`
+            SELECT
+                (SELECT json_agg(json_build_object('name', s.name))
+                 FROM employee_skills es
+                 JOIN skills s ON es.skill_id = s.id
+                 WHERE es.employee_id = $1) AS skills,
+                (SELECT json_agg(json_build_object(
+                    'title', we.job_title, 'company', we.company_name,
+                    'startDate', we.start_date, 'endDate', we.end_date,
+                    'isCurrent', we.is_current, 'description', we.description
+                ))
+                 FROM work_experience we
+                 WHERE we.employee_id = $1) AS work_experience
+        `, [application.employee_id]);
+        if (profileResult.rows[0]) {
+            profileSkills = profileResult.rows[0].skills || profileSkills;
+            profileExperience = profileResult.rows[0].work_experience || profileExperience;
+        }
+    }
+
+    const merged = skillDecayService.mergeSkillDecayInputs({
+        resumeSkills: parsed.extracted_skills || [],
+        resumeExperience: parsed.extracted_experience || [],
+        profileSkills,
+        profileExperience
+    });
+    const decay = skillDecayService.calculateSkillDecay(merged.skills, merged.experience);
+    const skillsFreshness = decay.skills || [];
+
+    let matchDetails = application.resume_match_details;
+    if (typeof matchDetails === 'string') {
+        try {
+            matchDetails = JSON.parse(matchDetails);
+        } catch {
+            matchDetails = {};
+        }
+    }
+
+    application.resume_match_details = {
+        ...(matchDetails || {}),
+        skillsFreshness
+    };
+    application.skill_freshness = skillsFreshness;
+    application.skill_freshness_source = merged.primarySource;
+    return application;
+};
+
+const HR_ROLES = new Set(['admin', 'hr_manager', 'recruiter', 'hr']);
+
+const sanitizeApplicationForApplicant = (application) => {
+    if (!application) return application;
+    const {
+        resume_match_score,
+        resume_match_details,
+        resume_parsed_data,
+        ai_overall_score,
+        ai_skill_match_score,
+        ai_experience_match_score,
+        ai_education_match_score,
+        ai_cultural_fit_score,
+        ai_skill_gap_analysis,
+        ai_strengths,
+        ai_concerns,
+        ai_interview_questions,
+        ai_success_prediction,
+        ai_retention_prediction,
+        ai_recommendation,
+        ai_ranking,
+        screening_score,
+        auto_reject_reason,
+        ...safe
+    } = application;
+    return safe;
+};
+
+const buildResumeSnapshot = (row) => {
+    if (row?.resume_parsed_data) return row.resume_parsed_data;
+    return {
+        skills: row?.parsed_skills || [],
+        experience: row?.parsed_experience || [],
+        education: row?.parsed_education || [],
+        certifications: row?.parsed_certifications || []
+    };
+};
+
+const normalizeApplicationStatus = (status) => (status === 'pending' ? 'submitted' : status);
+
+const buildJobRequirementsSnapshot = (row) => ({
+    required_skills: row?.required_skills || [],
+    min_experience_years: row?.min_experience_years || 0,
+    education_requirement: row?.education_requirement || '',
+    description: row?.job_description || '',
+    requirements: row?.job_requirements || row?.requirements || ''
+});
+
+const fetchRejectionContext = async (applicationId) => {
+    const result = await db.query(`
+        SELECT a.id, a.resume_parsed_data, a.resume_match_details,
+               j.title as job_title, j.required_skills, j.min_experience_years, j.education_requirement,
+               j.description as job_description, j.requirements as job_requirements,
+               COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
+               COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
+               COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
+               COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
+               COALESCE(cp.first_name, ep.first_name) as first_name,
+               COALESCE(cp.last_name, ep.last_name) as last_name,
+               u.email as email
+        FROM applications a
+        JOIN jobs j ON a.job_id = j.id
+        LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
+        LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
+        LEFT JOIN users u ON COALESCE(cp.user_id, ep.user_id) = u.id
+        LEFT JOIN resumes rc ON rc.candidate_id = cp.id
+        LEFT JOIN resumes re ON re.employee_id = ep.id
+        WHERE a.id = $1
+        ORDER BY COALESCE(rc.is_primary, re.is_primary) DESC,
+                 COALESCE(rc.created_at, re.created_at) DESC
+        LIMIT 1
+    `, [applicationId]);
+
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    let matchDetails = row.resume_match_details || null;
+    if (typeof matchDetails === 'string') {
+        try {
+            matchDetails = JSON.parse(matchDetails);
+        } catch {
+            matchDetails = null;
+        }
+    }
+    return {
+        jobTitle: row.job_title,
+        candidateName: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+        email: row.email,
+        resumeData: buildResumeSnapshot(row),
+        jobRequirements: buildJobRequirementsSnapshot(row),
+        matchDetails
+    };
+};
+
+const fetchInterviewFeedback = async (applicationId) => {
+    const feedback = await db.query(`
+        SELECT f.*
+        FROM interviews i
+        JOIN interview_feedback f ON f.interview_id = i.id
+        WHERE i.application_id = $1
+        ORDER BY f.submitted_at DESC
+    `, [applicationId]);
+    return feedback.rows || [];
+};
 
 // Get all applications (HR view)
 router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), async (req, res) => {
@@ -80,8 +239,9 @@ router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), asy
                     try {
                         const resumeResult = await db.query(`
                             SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
-                                   COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
-                                   COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
+                                COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
+                                COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
+                                COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
                                    COALESCE(rc.raw_text, re.raw_text) as resume_text
                             FROM applications a
                             LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
@@ -96,15 +256,38 @@ router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), asy
 
                         if (resumeResult.rows.length > 0 && resumeResult.rows[0].resume_text) {
                             const rd = resumeResult.rows[0];
-                            const jobResult = await db.query('SELECT required_skills, min_experience_years, education_requirement FROM jobs WHERE id = $1', [app.job_id]);
+                            const jobResult = await db.query('SELECT required_skills, min_experience_years, education_requirement, description, requirements FROM jobs WHERE id = $1', [app.job_id]);
                             const job = jobResult.rows[0] || {};
                             const matchScore = await resumeParser.calculateJobMatchScore(
                                 { skills: rd.parsed_skills || [], education: rd.parsed_education || [], experience: rd.parsed_experience || [] },
-                                { required_skills: job.required_skills || [], min_experience_years: job.min_experience_years || 0, education_level: job.education_requirement || '' },
+                                {
+                                    required_skills: job.required_skills || [],
+                                    min_experience_years: job.min_experience_years || 0,
+                                    education_level: job.education_requirement || '',
+                                    job_description: job.description || '',
+                                    job_requirements_text: job.requirements || ''
+                                },
                                 rd.resume_text || ''
                             );
-                            await db.query('UPDATE applications SET resume_match_score = $1, resume_match_details = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-                                [matchScore.overallScore, JSON.stringify(matchScore), app.id]);
+                            await db.query(
+                                `UPDATE applications
+                                 SET resume_match_score = $1,
+                                     resume_match_details = $2,
+                                     resume_parsed_data = $3,
+                                     updated_at = CURRENT_TIMESTAMP
+                                 WHERE id = $4`,
+                                [
+                                    matchScore.overallScore,
+                                    JSON.stringify(matchScore),
+                                    JSON.stringify({
+                                        skills: rd.parsed_skills || [],
+                                        education: rd.parsed_education || [],
+                                        experience: rd.parsed_experience || [],
+                                        certifications: rd.parsed_certifications || []
+                                    }),
+                                    app.id
+                                ]
+                            );
                             console.log(`Auto-calculated match score for ${app.first_name} ${app.last_name}: ${matchScore.overallScore}%`);
                         }
                     } catch (err) {
@@ -179,7 +362,7 @@ router.get('/my-applications', authenticate, async (req, res) => {
         }
 
         const result = await db.query(query, params);
-        res.json(result.rows);
+        res.json(result.rows.map(sanitizeApplicationForApplicant));
 
     } catch (error) {
         console.error('Get my applications error:', error);
@@ -267,6 +450,21 @@ router.get('/:id', authenticate, async (req, res) => {
             if (profile.rows.length === 0 || profile.rows[0].id !== application.candidate_id) {
                 return res.status(403).json({ error: 'Access denied' });
             }
+        } else if (req.user.role === 'employee') {
+            const profile = await db.query('SELECT id FROM employee_profiles WHERE user_id = $1', [req.user.id]);
+            if (profile.rows.length === 0 || profile.rows[0].id !== application.employee_id) {
+                return res.status(403).json({ error: 'Access denied' });
+            }
+        }
+
+        if (HR_ROLES.has(req.user.role)) {
+            const certs = application.parsed_resume?.extracted_certifications
+                || application.resume_parsed_data?.certifications
+                || [];
+            application.certification_status = certificationExpiryService.evaluate(
+                Array.isArray(certs) ? certs : []
+            );
+            await attachSkillFreshness(application);
         }
 
         // Auto-calculate match score if not yet calculated (fire and forget)
@@ -274,9 +472,10 @@ router.get('/:id', authenticate, async (req, res) => {
             (async () => {
                 try {
                     const resumeResult = await db.query(`
-                        SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
+                           SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
                                COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
                                COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
+                               COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
                                COALESCE(rc.raw_text, re.raw_text) as resume_text
                         FROM applications a
                         LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
@@ -298,14 +497,35 @@ router.get('/:id', authenticate, async (req, res) => {
                             { required_skills: job.required_skills || [], min_experience_years: job.min_experience_years || 0, education_level: job.education_requirement || '' },
                             rd.resume_text || ''
                         );
-                        await db.query('UPDATE applications SET resume_match_score = $1, resume_match_details = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
-                            [matchScore.overallScore, JSON.stringify(matchScore), application.id]);
+                        await db.query(
+                            `UPDATE applications
+                             SET resume_match_score = $1,
+                                 resume_match_details = $2,
+                                 resume_parsed_data = $3,
+                                 updated_at = CURRENT_TIMESTAMP
+                             WHERE id = $4`,
+                            [
+                                matchScore.overallScore,
+                                JSON.stringify(matchScore),
+                                JSON.stringify({
+                                    skills: rd.parsed_skills || [],
+                                    education: rd.parsed_education || [],
+                                    experience: rd.parsed_experience || [],
+                                    certifications: rd.parsed_certifications || []
+                                }),
+                                application.id
+                            ]
+                        );
                         console.log(`Auto-calculated match score for application ${application.id}: ${matchScore.overallScore}%`);
                     }
                 } catch (err) {
                     console.error('Auto match score error:', err.message);
                 }
             })();
+        }
+
+        if (!HR_ROLES.has(req.user.role)) {
+            return res.json(sanitizeApplicationForApplicant(application));
         }
 
         res.json(application);
@@ -437,15 +657,16 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
     try {
         const { id } = req.params;
         const { status, notes } = req.body;
+        const normalizedStatus = normalizeApplicationStatus(status);
 
         const validStatuses = [
-            'pending', 'submitted', 'under_review', 'shortlisted', 'interview_scheduled',
+            'submitted', 'under_review', 'shortlisted', 'interview_scheduled',
             'interviewed', 'offer_extended', 'offer_accepted', 'offer_declined',
             'hired', 'rejected', 'withdrawn'
         ];
 
-        if (!validStatuses.includes(status)) {
-            return res.status(400).json({ error: 'Invalid status' });
+        if (!validStatuses.includes(normalizedStatus)) {
+            return res.status(400).json({ error: `Invalid status: ${status}` });
         }
 
         // Prevent changing status of withdrawn applications
@@ -454,11 +675,48 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
             return res.status(400).json({ error: 'Cannot change status of a withdrawn application' });
         }
 
+        const interviewCount = await db.query(
+            'SELECT COUNT(*)::int as count FROM interviews WHERE application_id = $1',
+            [id]
+        );
+        const hasInterview = (interviewCount.rows[0]?.count || 0) > 0;
+
+        if (normalizedStatus === 'rejected' && hasInterview) {
+            return res.status(409).json({
+                error: 'Manual rejection required for interview-stage candidates.'
+            });
+        }
+
+        let rejectionReason = null;
+        if (normalizedStatus === 'rejected') {
+            try {
+                const context = await fetchRejectionContext(id);
+                if (context) {
+                    const draft = await aiService.generateRejectionDraft({
+                        candidateName: context.candidateName,
+                        jobTitle: context.jobTitle,
+                        jobRequirements: context.jobRequirements,
+                        resumeData: context.resumeData,
+                        matchDetails: context.matchDetails,
+                        stage: 'screening'
+                    });
+                    rejectionReason = draft?.body || null;
+                }
+            } catch (draftErr) {
+                console.error('Rejection draft error (continuing with status update):', draftErr.message);
+            }
+        }
+
         const result = await db.query(`
-            UPDATE applications SET status = $1, notes = COALESCE($2, notes), reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP
-            WHERE id = $4
+            UPDATE applications SET
+                status = $1,
+                notes = COALESCE($2, notes),
+                rejection_reason = COALESCE($3, rejection_reason),
+                reviewed_by = $4,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = $5
             RETURNING *
-        `, [status, notes, req.user.id, id]);
+        `, [normalizedStatus, notes, rejectionReason, req.user.id, id]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Application not found' });
@@ -478,12 +736,21 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
         `, [id]);
 
         if (candidateEmail.rows.length > 0) {
-            emailService.sendStatusUpdateEmail(
-                candidateEmail.rows[0].email,
-                candidateEmail.rows[0].first_name,
-                candidateEmail.rows[0].job_title,
-                status
-            ).catch(console.error);
+            if (normalizedStatus === 'rejected') {
+                emailService.sendRejectionEmail(
+                    candidateEmail.rows[0].email,
+                    candidateEmail.rows[0].first_name,
+                    candidateEmail.rows[0].job_title,
+                    rejectionReason
+                ).catch(console.error);
+            } else {
+                emailService.sendStatusUpdateEmail(
+                    candidateEmail.rows[0].email,
+                    candidateEmail.rows[0].first_name,
+                    candidateEmail.rows[0].job_title,
+                    normalizedStatus
+                ).catch(console.error);
+            }
 
             // Create in-app notification for the candidate/employee
             const statusMessages = {
@@ -495,7 +762,9 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
                 'offer_accepted': 'Your offer has been accepted',
                 'offer_declined': 'Your offer has been declined',
                 'hired': 'Congratulations! You have been hired',
-                'rejected': 'Unfortunately, your application was not successful'
+                'rejected': rejectionReason
+                    ? 'Your application was not successful. Personalized feedback is available in your applications portal.'
+                    : 'Unfortunately, your application was not successful'
             };
 
             const statusIcons = {
@@ -510,7 +779,7 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
                 'rejected': 'rejected'
             };
 
-            if (statusMessages[status]) {
+            if (statusMessages[normalizedStatus]) {
                 // Get the user_id for the applicant
                 const userIdResult = await db.query(`
                     SELECT COALESCE(cp.user_id, ep.user_id) as user_id
@@ -527,8 +796,8 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
                     `, [
                         userIdResult.rows[0].user_id,
                         `Application Update: ${candidateEmail.rows[0].job_title}`,
-                        statusMessages[status],
-                        `application_${statusIcons[status] || 'update'}`,
+                        statusMessages[normalizedStatus],
+                        `application_${statusIcons[normalizedStatus] || 'update'}`,
                         application.employee_id ? '/employee/applications' : '/candidate/applications'
                     ]);
                 }
@@ -539,7 +808,116 @@ router.patch('/:id/status', authenticate, authorize('admin', 'hr_manager', 'recr
 
     } catch (error) {
         console.error('Update status error:', error);
-        res.status(500).json({ error: 'Failed to update status' });
+        const message = error.message?.includes('invalid input value for enum')
+            ? 'Invalid application status for the database. Use Submitted instead of Pending.'
+            : (error.message || 'Failed to update status');
+        res.status(500).json({ error: message });
+    }
+});
+
+// Generate rejection draft (HR)
+router.post('/:id/rejection-draft', authenticate, authorize('admin', 'hr_manager', 'recruiter'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const context = await fetchRejectionContext(id);
+        if (!context) {
+            return res.status(404).json({ error: 'Application not found' });
+        }
+
+        const feedback = await fetchInterviewFeedback(id);
+        const stage = feedback.length > 0 ? 'post_interview' : 'screening';
+        const draft = await aiService.generateRejectionDraft({
+            candidateName: context.candidateName,
+            jobTitle: context.jobTitle,
+            jobRequirements: context.jobRequirements,
+            resumeData: context.resumeData,
+            matchDetails: context.matchDetails,
+            interviewFeedback: feedback,
+            stage
+        });
+
+        res.json({
+            subject: draft.subject,
+            body: draft.body
+        });
+    } catch (error) {
+        console.error('Rejection draft error:', error);
+        res.status(500).json({ error: 'Failed to generate rejection draft' });
+    }
+});
+
+// Send rejection email manually (HR)
+router.post('/:id/rejection-send', authenticate, authorize('admin', 'hr_manager', 'recruiter'), async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { subject, body } = req.body;
+
+        if (!body || body.trim().length < 10) {
+            return res.status(400).json({ error: 'Rejection message is required' });
+        }
+
+        const sanitizedBody = aiService.sanitizeRejectionBody(body);
+        if (!sanitizedBody || sanitizedBody.length < 10) {
+            return res.status(400).json({ error: 'Rejection message is required' });
+        }
+
+        const context = await fetchRejectionContext(id);
+        if (!context) {
+            return res.status(404).json({ error: 'Application not found' });
+        }
+
+        const result = await db.query(`
+            UPDATE applications
+            SET status = 'rejected',
+                rejection_reason = $1,
+                reviewed_by = $2,
+                reviewed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3
+            RETURNING *
+        `, [sanitizedBody, req.user.id, id]);
+
+        if (context.email) {
+            await emailService.sendRejectionEmail(
+                context.email,
+                context.candidateName,
+                context.jobTitle,
+                sanitizedBody,
+                subject
+            );
+        }
+
+        if (context.email) {
+            const userIdResult = await db.query(`
+                SELECT COALESCE(cp.user_id, ep.user_id) as user_id,
+                       a.employee_id
+                FROM applications a
+                LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
+                LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
+                WHERE a.id = $1
+            `, [id]);
+
+            if (userIdResult.rows[0]?.user_id) {
+                await db.query(`
+                    INSERT INTO notifications (user_id, title, message, type, link)
+                    VALUES ($1, $2, $3, $4, $5)
+                `, [
+                    userIdResult.rows[0].user_id,
+                    `Application Update: ${context.jobTitle}`,
+                    'A rejection update is available for your application.',
+                    'application_rejected',
+                    userIdResult.rows[0].employee_id ? '/employee/applications' : '/candidate/applications'
+                ]);
+            }
+        }
+
+        res.json({
+            message: 'Rejection email sent',
+            application: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Rejection send error:', error);
+        res.status(500).json({ error: 'Failed to send rejection email' });
     }
 });
 
@@ -702,11 +1080,11 @@ router.post('/:id/accept-offer', authenticate, async (req, res) => {
 
         console.log(`Offer accepted for job ${app.job_id}. Rejected ${rejectResult.rows.length} other candidates.`);
 
-        // Send rejection emails to other candidates
+        // Generate rejection drafts for other interviewed candidates (manual send required)
         if (rejectResult.rows.length > 0) {
             const rejectedIds = rejectResult.rows.map(r => r.id);
             const rejectedCandidates = await db.query(`
-                SELECT a.id, u.email, 
+                SELECT a.id,
                        COALESCE(cp.first_name, ep.first_name) as first_name,
                        COALESCE(cp.last_name, ep.last_name) as last_name,
                        j.title as job_title
@@ -714,25 +1092,28 @@ router.post('/:id/accept-offer', authenticate, async (req, res) => {
                 JOIN jobs j ON a.job_id = j.id
                 LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
                 LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
-                LEFT JOIN users u ON cp.user_id = u.id OR ep.user_id = u.id
                 WHERE a.id = ANY($1)
             `, [rejectedIds]);
 
-            console.log('Sending rejection emails to:', rejectedCandidates.rows.map(c => c.email));
-
             for (const candidate of rejectedCandidates.rows) {
-                if (candidate.email) {
-                    try {
-                        await emailService.sendStatusUpdateEmail(
-                            candidate.email,
-                            candidate.first_name,
-                            candidate.job_title,
-                            'rejected'
-                        );
-                        console.log(`Rejection email sent to ${candidate.email}`);
-                    } catch (err) {
-                        console.error(`Rejection email FAILED for ${candidate.email}:`, err.message);
-                    }
+                const context = await fetchRejectionContext(candidate.id);
+                const feedback = await fetchInterviewFeedback(candidate.id);
+                const draft = context
+                    ? await aiService.generateRejectionDraft({
+                        candidateName: `${candidate.first_name || ''} ${candidate.last_name || ''}`.trim(),
+                        jobTitle: context.jobTitle,
+                        jobRequirements: context.jobRequirements,
+                        resumeData: context.resumeData,
+                        matchDetails: context.matchDetails,
+                        interviewFeedback: feedback,
+                        stage: 'post_interview'
+                    })
+                    : null;
+                if (draft?.body) {
+                    await db.query(
+                        'UPDATE applications SET rejection_reason = $1 WHERE id = $2',
+                        [draft.body, candidate.id]
+                    );
                 }
             }
         }
@@ -794,7 +1175,7 @@ router.post('/:id/accept-offer', authenticate, async (req, res) => {
                         `, [
                             user.user_id,
                             `Application Update: ${user.job_title}`,
-                            `Unfortunately, your application for ${user.job_title} was not successful. Another candidate was selected.`,
+                            `Unfortunately, your application for ${user.job_title} was not successful. Personalized feedback is available in your applications portal when HR sends it.`,
                             'application_rejected',
                             user.employee_id ? '/employee/applications' : '/candidate/applications'
                         ]);
@@ -1007,6 +1388,7 @@ router.get('/:id/match-score', authenticate, authorize('admin', 'hr_manager', 'r
                    COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills, 
                    COALESCE(rc.extracted_education, re.extracted_education) as parsed_education, 
                    COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
+                   COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
                    COALESCE(rc.raw_text, re.raw_text) as resume_text, 
                    COALESCE(rc.extraction_confidence, re.extraction_confidence) as extraction_confidence
             FROM applications a
@@ -1033,6 +1415,7 @@ router.get('/:id/match-score', authenticate, authorize('admin', 'hr_manager', 'r
                 applicationId: id,
                 matchScore: application.resume_match_details,
                 resumeConfidence: application.extraction_confidence,
+                matchSource: application.resume_match_details?.mlPowered ? 'ml' : application.resume_match_details?.aiPowered ? 'openai' : 'rule',
                 cached: true
             });
         }
@@ -1048,7 +1431,9 @@ router.get('/:id/match-score', authenticate, authorize('admin', 'hr_manager', 'r
         const jobRequirements = {
             required_skills: application.required_skills || [],
             min_experience_years: application.min_experience_years || 0,
-            education_level: application.education_requirement || ''
+            education_level: application.education_requirement || '',
+            job_description: application.job_description || '',
+            job_requirements_text: application.job_requirements || ''
         };
 
         // Calculate match score (now async with OpenAI support)
@@ -1063,14 +1448,26 @@ router.get('/:id/match-score', authenticate, authorize('admin', 'hr_manager', 'r
             UPDATE applications SET 
                 resume_match_score = $1,
                 resume_match_details = $2,
+                resume_parsed_data = $3,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = $3
-        `, [matchScore.overallScore, JSON.stringify(matchScore), id]);
+            WHERE id = $4
+        `, [
+            matchScore.overallScore,
+            JSON.stringify(matchScore),
+            JSON.stringify({
+                skills: parsedResume.skills || [],
+                education: parsedResume.education || [],
+                experience: parsedResume.experience || [],
+                certifications: application.parsed_certifications || []
+            }),
+            id
+        ]);
 
         res.json({
             applicationId: id,
             matchScore: matchScore,
             resumeConfidence: application.extraction_confidence,
+            matchSource: matchScore.mlPowered ? 'ml' : matchScore.aiPowered ? 'openai' : 'rule',
             cached: false
         });
 
@@ -1138,7 +1535,9 @@ router.post('/bulk-match-score', authenticate, authorize('admin', 'hr_manager', 
                 const jobRequirements = {
                     required_skills: app.required_skills || [],
                     min_experience_years: app.min_experience_years || 0,
-                    education_level: app.education_requirement || ''
+                    education_level: app.education_requirement || '',
+                    job_description: app.job_description || '',
+                    job_requirements_text: app.job_requirements || ''
                 };
                 
                 // Calculate match score with OpenAI
@@ -1271,6 +1670,7 @@ router.post('/top-n-shortlist', authenticate, authorize('admin', 'hr_manager', '
                 SET status = 'rejected', 
                     auto_reject_reason = 'Auto-rejected: did not make the top ' || $1 || ' shortlist',
                     notes = 'Auto-rejected: did not make the top ' || $1 || ' shortlist',
+                    rejection_reason = COALESCE(rejection_reason, NULL),
                     reviewed_by = $2,
                     reviewed_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
@@ -1282,6 +1682,26 @@ router.post('/top-n-shortlist', authenticate, authorize('admin', 'hr_manager', '
             // Send rejection notification emails and bell notifications
             for (const app of rejectResult.rows) {
                 try {
+                    const context = await fetchRejectionContext(app.id);
+                    const draft = context
+                        ? await aiService.generateRejectionDraft({
+                            candidateName: context.candidateName,
+                            jobTitle: context.jobTitle,
+                            jobRequirements: context.jobRequirements,
+                            resumeData: context.resumeData,
+                            matchDetails: context.matchDetails,
+                            stage: 'screening'
+                        })
+                        : null;
+                    const rejectionReason = draft?.body || null;
+
+                    if (rejectionReason) {
+                        await db.query(
+                            'UPDATE applications SET rejection_reason = $1 WHERE id = $2',
+                            [rejectionReason, app.id]
+                        );
+                    }
+
                     const userResult = await db.query(`
                         SELECT u.id as user_id, u.email, j.title as job_title,
                                COALESCE(cp.first_name, ep.first_name, 'Applicant') as first_name,
@@ -1294,11 +1714,11 @@ router.post('/top-n-shortlist', authenticate, authorize('admin', 'hr_manager', '
                         WHERE a.id = $1
                     `, [app.id]);
                     if (userResult.rows[0]?.email) {
-                        emailService.sendStatusUpdateEmail(
+                        emailService.sendRejectionEmail(
                             userResult.rows[0].email,
                             userResult.rows[0].first_name,
                             userResult.rows[0].job_title,
-                            'rejected'
+                            rejectionReason
                         ).catch(console.error);
                     }
                     if (userResult.rows[0]?.user_id) {
@@ -1358,6 +1778,8 @@ router.post('/bulk-update-status', authenticate, authorize('admin', 'hr_manager'
             RETURNING *
         `, [status, reason, req.user.id, applicationIds]);
 
+        const manualRequired = [];
+
         // Send notifications for status changes
         for (const app of result.rows) {
             const userResult = await db.query(`
@@ -1373,13 +1795,51 @@ router.post('/bulk-update-status', authenticate, authorize('admin', 'hr_manager'
             `, [app.id]);
 
             if (userResult.rows[0]?.email) {
-                // Send email notification
-                emailService.sendStatusUpdateEmail(
-                    userResult.rows[0].email,
-                    userResult.rows[0].first_name,
-                    userResult.rows[0].job_title,
-                    status
-                ).catch(console.error);
+                if (status === 'rejected') {
+                    const interviewCount = await db.query(
+                        'SELECT COUNT(*)::int as count FROM interviews WHERE application_id = $1',
+                        [app.id]
+                    );
+                    const hasInterview = (interviewCount.rows[0]?.count || 0) > 0;
+                    if (hasInterview) {
+                        manualRequired.push(app.id);
+                    } else {
+                        const context = await fetchRejectionContext(app.id);
+                        const draft = context
+                            ? await aiService.generateRejectionDraft({
+                                candidateName: context.candidateName,
+                                jobTitle: context.jobTitle,
+                                jobRequirements: context.jobRequirements,
+                                resumeData: context.resumeData,
+                                matchDetails: context.matchDetails,
+                                stage: 'screening'
+                            })
+                            : null;
+                        const rejectionReason = draft?.body || null;
+
+                        if (rejectionReason) {
+                            await db.query(
+                                'UPDATE applications SET rejection_reason = $1 WHERE id = $2',
+                                [rejectionReason, app.id]
+                            );
+                        }
+
+                        emailService.sendRejectionEmail(
+                            userResult.rows[0].email,
+                            userResult.rows[0].first_name,
+                            userResult.rows[0].job_title,
+                            rejectionReason
+                        ).catch(console.error);
+                    }
+                } else {
+                    // Send email notification
+                    emailService.sendStatusUpdateEmail(
+                        userResult.rows[0].email,
+                        userResult.rows[0].first_name,
+                        userResult.rows[0].job_title,
+                        status
+                    ).catch(console.error);
+                }
 
                 // Create in-app notification
                 const statusMessages = {
@@ -1410,7 +1870,8 @@ router.post('/bulk-update-status', authenticate, authorize('admin', 'hr_manager'
         res.json({
             message: `${result.rows.length} applications updated to ${status}`,
             updated: result.rows.length,
-            applications: result.rows
+            applications: result.rows,
+            manualRequired
         });
 
     } catch (error) {

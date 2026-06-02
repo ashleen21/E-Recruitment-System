@@ -142,6 +142,31 @@ class EmailService {
         return this.sendEmail(email, `Application Update - ${jobTitle}`, html);
     }
 
+    async sendRejectionEmail(email, name, jobTitle, rejectionReason, subjectOverride = null) {
+        const aiService = require('./ai.service');
+        const cleanedReason = rejectionReason
+            ? aiService.sanitizeRejectionBody(rejectionReason)
+            : null;
+        const safeReason = cleanedReason || 'After careful consideration, we have decided to move forward with other candidates.';
+        const html = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #dc2626;">Application Update</h2>
+                <p>Hi ${name || 'there'},</p>
+                <p>Thank you for your interest in the <strong>${jobTitle}</strong> position.</p>
+                <div style="background-color: #fef2f2; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #dc2626;">
+                    <p style="margin: 0; white-space: pre-line;">${safeReason}</p>
+                </div>
+                <p>We appreciate your time and encourage you to apply again in the future.</p>
+                <a href="${config.frontendUrl}/my-applications" style="display: inline-block; padding: 12px 24px; background-color: #dc2626; color: white; text-decoration: none; border-radius: 6px; margin: 10px 0;">
+                    View My Applications
+                </a>
+                <p>Best regards,<br>The Recruitment Team</p>
+            </div>
+        `;
+        const subject = subjectOverride || `Application Update - ${jobTitle}`;
+        return this.sendEmail(email, subject, html);
+    }
+
     formatInterviewType(type) {
         const typeMap = {
             'video': 'Video Call',
