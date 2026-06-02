@@ -1,6 +1,12 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+const host = process.env.DB_HOST || '';
+const useSsl = process.env.DB_SSL === 'true'
+    || process.env.DATABASE_URL?.includes('sslmode=require')
+    || host.includes('neon.tech')
+    || (process.env.NODE_ENV === 'production' && host && !host.includes('localhost'));
+
 const pool = new Pool({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT,
@@ -10,6 +16,7 @@ const pool = new Pool({
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 2000,
+    ...(useSsl ? { ssl: { rejectUnauthorized: false } } : {})
 });
 
 pool.on('connect', () => {
