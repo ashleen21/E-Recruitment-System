@@ -1,10 +1,8 @@
 import React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  AcademicCapIcon,
   ChartBarIcon,
   SparklesIcon,
-  BriefcaseIcon,
   BookOpenIcon,
 } from '@heroicons/react/24/outline';
 import { employeesAPI } from '../../services/api';

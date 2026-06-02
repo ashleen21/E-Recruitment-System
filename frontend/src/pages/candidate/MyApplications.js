@@ -13,7 +13,6 @@ import {
   EyeIcon,
   BriefcaseIcon,
   MapPinIcon,
-  CurrencyDollarIcon,
   BuildingOfficeIcon,
   HandThumbUpIcon,
   HandThumbDownIcon,

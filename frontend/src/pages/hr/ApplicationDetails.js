@@ -21,7 +21,6 @@ import {
   ShieldCheckIcon,
   ClockIcon,
   ExclamationTriangleIcon,
-  GlobeAltIcon,
   IdentificationIcon,
   HomeIcon,
   HeartIcon,
@@ -114,7 +113,7 @@ const ApplicationDetails = () => {
   });
 
   // Predictions query
-  const { data: predictions, isLoading: predictionsLoading, refetch: refetchPredictions } = useQuery({
+  const { data: predictions, isLoading: predictionsLoading } = useQuery({
     queryKey: ['predictions', id],
     queryFn: () => aiAPI.getPredictions(id),
     enabled: !!id,

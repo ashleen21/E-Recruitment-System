@@ -27,7 +27,7 @@ import {
   DocumentTextIcon,
   UsersIcon,
 } from '@heroicons/react/24/outline';
-import { employeesAPI, skillsAPI } from '../../services/api';
+import { employeesAPI } from '../../services/api';
 
 const EmployeeProfile = () => {
   const queryClient = useQueryClient();
@@ -41,7 +41,7 @@ const EmployeeProfile = () => {
   const [newTraining, setNewTraining] = useState({ training_name: '', provider: '', completion_date: '', certificate_url: '', description: '', uploadType: 'url' });
   const [certFile, setCertFile] = useState(null);
   const [trainingFile, setTrainingFile] = useState(null);
-  const [parsedResumeData, setParsedResumeData] = useState(null);
+  const [, setParsedResumeData] = useState(null);
   const [showParsedResumeModal, setShowParsedResumeModal] = useState(false);
   const [parsedEditMode, setParsedEditMode] = useState(false);
   const [parsedEditData, setParsedEditData] = useState({});
@@ -60,7 +60,7 @@ const EmployeeProfile = () => {
     },
   });
 
-  const { data: resumeData, refetch: refetchResume } = useQuery({
+  const { data: resumeData } = useQuery({
     queryKey: ['employee-resume'],
     queryFn: async () => {
       const response = await employeesAPI.getResume();
@@ -72,15 +72,7 @@ const EmployeeProfile = () => {
     },
   });
 
-  const { data: allSkills } = useQuery({
-    queryKey: ['skills'],
-    queryFn: async () => {
-      const response = await skillsAPI.getCategories();
-      return response.data;
-    },
-  });
-
-  const { register, handleSubmit, reset, formState: { errors } } = useForm();
+  const { register, handleSubmit, reset } = useForm();
 
   React.useEffect(() => {
     if (profile) {

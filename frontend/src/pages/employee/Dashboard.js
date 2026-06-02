@@ -32,10 +32,10 @@ const EmployeeDashboard = () => {
     queryFn: () => skillsAPI.getGaps(),
   });
 
-  const employeeData = profile?.data || {};
-  const opportunitiesList = opportunities?.data || [];
-  const applicationsList = myApplications?.data || [];
-  const gaps = skillGaps?.data || [];
+  const employeeData = useMemo(() => profile?.data || {}, [profile?.data]);
+  const opportunitiesList = useMemo(() => opportunities?.data || [], [opportunities?.data]);
+  const applicationsList = useMemo(() => myApplications?.data || [], [myApplications?.data]);
+  const gaps = useMemo(() => skillGaps?.data || [], [skillGaps?.data]);
 
   // Calculate career progress based on real data
   const careerProgress = useMemo(() => {
@@ -97,7 +97,6 @@ const EmployeeDashboard = () => {
 
   // Generate learning recommendations based on skill gaps
   const learningRecommendations = useMemo(() => {
-    const currentSkills = (employeeData.skills || []).map(s => (typeof s === 'string' ? s : s.name || '').toLowerCase());
     const currentGaps = (gaps || []).map(g => (typeof g === 'string' ? g : g.name || '').toLowerCase());
     const department = (employeeData.department || '').toLowerCase();
     const jobTitle = (employeeData.job_title || '').toLowerCase();

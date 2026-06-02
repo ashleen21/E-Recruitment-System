@@ -12,7 +12,7 @@ import {
   ArrowPathIcon,
   TrophyIcon,
 } from '@heroicons/react/24/outline';
-import { applicationsAPI, aiAPI, jobsAPI } from '../../services/api';
+import { applicationsAPI, jobsAPI } from '../../services/api';
 
 const ApplicationList = () => {
   const [searchParams] = useSearchParams();
@@ -41,7 +41,7 @@ const ApplicationList = () => {
     },
   });
 
-  const { data: aiRanking, isLoading: rankingLoading } = useQuery({
+  const { data: aiRanking } = useQuery({
     queryKey: ['ai-ranking', filters.jobId],
     queryFn: () => applicationsAPI.getAIRanking(filters.jobId),
     enabled: !!filters.jobId,
@@ -87,15 +87,6 @@ const ApplicationList = () => {
     if (selectedIds.length === 0) return;
     bulkRejectMutation.mutate({ ids: selectedIds, reason: rejectReason });
   };
-
-  const screenMutation = useMutation({
-    mutationFn: (id) => aiAPI.screenCandidate(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries(['applications']);
-      toast.success('AI screening completed');
-    },
-    onError: () => toast.error('AI screening failed'),
-  });
 
   const topNShortlistMutation = useMutation({
     mutationFn: ({ jobId, topN }) => applicationsAPI.topNShortlist(jobId, topN),

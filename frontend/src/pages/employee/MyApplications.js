@@ -11,8 +11,6 @@ import {
   EyeIcon,
   BriefcaseIcon,
   MapPinIcon,
-  BuildingOfficeIcon,
-  AcademicCapIcon,
   ChartBarIcon,
   ExclamationTriangleIcon,
   HandThumbUpIcon,

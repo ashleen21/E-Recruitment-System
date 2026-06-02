@@ -7,8 +7,6 @@ import {
   FunnelIcon,
   MapPinIcon,
   BriefcaseIcon,
-  ClockIcon,
-  BuildingOfficeIcon,
   ChartBarIcon,
   BookmarkIcon,
   XMarkIcon,

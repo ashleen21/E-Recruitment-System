@@ -9,7 +9,6 @@ import {
   CheckCircleIcon,
   BuildingOfficeIcon,
   XMarkIcon,
-  BriefcaseIcon,
   InformationCircleIcon,
   EyeIcon,
   UserGroupIcon,
