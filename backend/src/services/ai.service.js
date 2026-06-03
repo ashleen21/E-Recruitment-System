@@ -134,6 +134,11 @@ class AIService {
     }
 
     // Screen an application against job requirements
+    /** Fast rule-based scoring only — always completes, no OpenAI/ML. */
+    async screenApplicationFast(application, job) {
+        return this._fallbackScreening(application, job);
+    }
+
     async screenApplication(application, job) {
         try {
             const candidateId = application.candidate_id;

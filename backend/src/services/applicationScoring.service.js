@@ -247,21 +247,78 @@ const ingestApplicationResume = async ({ file, candidateId, employeeId, applicat
     }
 };
 
+const attachProfileResumeToApplication = async (applicationId, candidateId, employeeId) => {
+    const ownerFilter = candidateId
+        ? 'candidate_id = $1'
+        : 'employee_id = $1';
+    const ownerId = candidateId || employeeId;
+    if (!ownerId) return null;
+
+    const resumeResult = await db.query(`
+        SELECT file_path
+        FROM resumes
+        WHERE ${ownerFilter}
+        ORDER BY is_primary DESC NULLS LAST, created_at DESC
+        LIMIT 1
+    `, [ownerId]);
+
+    const filePath = resumeResult.rows[0]?.file_path;
+    if (!filePath) return null;
+
+    await db.query(
+        'UPDATE applications SET resume_url = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [filePath, applicationId]
+    );
+    return filePath;
+};
+
+/** Always writes a score using profile/resume data (no OpenAI). */
+const runApplicationScoringFast = async (application, job) => {
+    const scores = await aiService.screenApplicationFast(application, job);
+    await persistScreeningScores(application.id, scores);
+    console.log(`Baseline score for application ${application.id}: ${scores.overallScore}%`);
+    return scores.overallScore;
+};
+
 const runApplicationScoring = async (application, job) => {
     try {
-        const score = await autoCalculateMatchScore(application.id, job.id, application);
-        if (score == null) {
-            const scores = await aiService.screenApplication(application, job);
-            await persistScreeningScores(application.id, scores);
-            console.log(`Screening score for application ${application.id}: ${scores.overallScore}%`);
-            return;
+        await runApplicationScoringFast(application, job);
+
+        const refined = await autoCalculateMatchScore(application.id, job.id, application);
+        if (refined != null) {
+            console.log(`Refined match score for application ${application.id}: ${refined}%`);
         }
-        console.log(`Fast match score for application ${application.id}: ${score}%`);
+
         aiService.screenApplication(application, job)
             .then((scores) => persistScreeningScores(application.id, scores))
             .catch((err) => console.error(`Background AI screening error for ${application.id}:`, err.message));
     } catch (err) {
         console.error(`Application scoring error for ${application.id}:`, err.message);
+        try {
+            await runApplicationScoringFast(application, job);
+        } catch (fallbackErr) {
+            console.error(`Fallback scoring failed for ${application.id}:`, fallbackErr.message);
+        }
+    }
+};
+
+const scoreApplicationsWithoutMatch = async (applications) => {
+    for (const app of applications) {
+        if (hasResumeMatchScore(app)) continue;
+        try {
+            const jobResult = await db.query('SELECT * FROM jobs WHERE id = $1', [app.job_id]);
+            if (jobResult.rows.length === 0) continue;
+            const job = jobResult.rows[0];
+            const appWithResume = { ...app };
+            if (!appWithResume.resume_url) {
+                const url = await attachProfileResumeToApplication(app.id, app.candidate_id, app.employee_id);
+                if (url) appWithResume.resume_url = url;
+            }
+            await runApplicationScoringFast(appWithResume, job);
+            autoCalculateMatchScore(app.id, app.job_id, appWithResume).catch(() => {});
+        } catch (err) {
+            console.error(`List score backfill failed for ${app.id}:`, err.message);
+        }
     }
 };
 
@@ -270,6 +327,9 @@ module.exports = {
     autoCalculateMatchScore,
     ingestApplicationResume,
     runApplicationScoring,
+    runApplicationScoringFast,
+    scoreApplicationsWithoutMatch,
+    attachProfileResumeToApplication,
     persistMatchScore,
     buildResumeSnapshot,
     parseJsonField

@@ -15,6 +15,8 @@ const {
     autoCalculateMatchScore,
     ingestApplicationResume,
     runApplicationScoring,
+    attachProfileResumeToApplication,
+    scoreApplicationsWithoutMatch,
     parseJsonField,
     buildResumeSnapshot
 } = applicationScoring;
@@ -240,14 +242,19 @@ router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), asy
         // Auto-calculate match scores for applications that don't have one (fast, no OpenAI)
         const appsWithoutScore = result.rows.filter((a) => !hasResumeMatchScore(a));
         if (appsWithoutScore.length > 0) {
-            (async () => {
-                for (const app of appsWithoutScore) {
-                    const score = await autoCalculateMatchScore(app.id, app.job_id, app);
-                    if (score !== null) {
-                        console.log(`Auto-calculated match score for ${app.first_name} ${app.last_name}: ${score}%`);
-                    }
+            await scoreApplicationsWithoutMatch(appsWithoutScore.slice(0, 15));
+            const pendingIds = appsWithoutScore.map((a) => a.id);
+            const refreshed = await db.query(
+                'SELECT id, resume_match_score, ai_overall_score FROM applications WHERE id = ANY($1::uuid[])',
+                [pendingIds]
+            );
+            const scoreById = new Map(refreshed.rows.map((r) => [r.id, r]));
+            result.rows.forEach((app) => {
+                const latest = scoreById.get(app.id);
+                if (latest) {
+                    app.resume_match_score = latest.resume_match_score ?? latest.ai_overall_score;
                 }
-            })();
+            });
         }
 
         res.json({
@@ -426,12 +433,10 @@ router.get('/:id', authenticate, async (req, res) => {
         }
 
         if (!hasResumeMatchScore(application)) {
-            (async () => {
-                const score = await autoCalculateMatchScore(application.id, application.job_id, application);
-                if (score !== null) {
-                    console.log(`Auto-calculated match score for application ${application.id}: ${score}%`);
-                }
-            })();
+            const jobRow = await db.query('SELECT * FROM jobs WHERE id = $1', [application.job_id]);
+            if (jobRow.rows[0]) {
+                scoreApplicationsWithoutMatch([application]).catch(() => {});
+            }
         }
 
         if (!HR_ROLES.has(req.user.role)) {
@@ -515,6 +520,15 @@ router.post('/', authenticate, uploadResume, handleUploadError, async (req, res)
         `, [job_id, candidateId, employeeId, cover_letter, resumeUrl, JSON.stringify(screening_answers)]);
 
         const application = result.rows[0];
+
+        const profileResumeUrl = await attachProfileResumeToApplication(
+            application.id,
+            candidateId,
+            employeeId
+        );
+        if (profileResumeUrl) {
+            application.resume_url = profileResumeUrl;
+        }
 
         if (req.file) {
             await ingestApplicationResume({
