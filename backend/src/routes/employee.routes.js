@@ -1126,12 +1126,12 @@ router.post('/apply-internal', authenticate, authorize('employee'), async (req, 
             }
         }
 
-        // Create application
+        // Create application (link profile resume so scoring can find the file)
         const result = await db.query(`
-            INSERT INTO applications (job_id, employee_id, status, cover_letter, submitted_at)
-            VALUES ($1, $2, 'submitted', $3, CURRENT_TIMESTAMP)
+            INSERT INTO applications (job_id, employee_id, status, cover_letter, resume_url, submitted_at)
+            VALUES ($1, $2, 'submitted', $3, $4, CURRENT_TIMESTAMP)
             RETURNING *
-        `, [jobId, employee.id, coverLetter]);
+        `, [jobId, employee.id, coverLetter, employee.resume_url || null]);
 
         const application = result.rows[0];
 
@@ -1139,42 +1139,8 @@ router.post('/apply-internal', authenticate, authorize('employee'), async (req, 
         const jobResult = await db.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
         const job = jobResult.rows[0];
 
-        // Trigger AI screening asynchronously (same as candidate applications)
-        aiService.screenApplication(application, job).then(async (scores) => {
-            try {
-                await db.query(`
-                    UPDATE applications SET
-                        ai_overall_score = $1,
-                        ai_skill_match_score = $2,
-                        ai_experience_match_score = $3,
-                        ai_education_match_score = $4,
-                        ai_cultural_fit_score = $5,
-                        ai_skill_gap_analysis = $6,
-                        ai_strengths = $7,
-                        ai_concerns = $8,
-                        ai_interview_questions = $9,
-                        ai_success_prediction = $10,
-                        ai_retention_prediction = $11,
-                        ai_recommendation = $12,
-                        resume_match_score = $1,
-                        resume_match_details = $13
-                    WHERE id = $14
-                `, [
-                    scores.overallScore, scores.skillMatchScore, scores.experienceMatchScore,
-                    scores.educationMatchScore, scores.culturalFitScore,
-                    JSON.stringify(scores.skillGapAnalysis), JSON.stringify(scores.strengths),
-                    JSON.stringify(scores.concerns), JSON.stringify(scores.interviewQuestions),
-                    scores.successPrediction, scores.retentionPrediction, scores.recommendation,
-                    JSON.stringify(scores._resumeMatchDetails || {}),
-                    application.id
-                ]);
-                console.log(`AI score for employee application ${application.id}: ${scores.overallScore}%`);
-            } catch (updateError) {
-                console.error(`Failed to update AI score for application ${application.id}:`, updateError.message);
-            }
-        }).catch(err => {
-            console.error(`AI screening error for application ${application.id}:`, err.message);
-        });
+        const { runApplicationScoring } = require('../services/applicationScoring.service');
+        await runApplicationScoring(application, job);
 
         // Notify HR
         try {

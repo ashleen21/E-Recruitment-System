@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const router = express.Router();
 const db = require('../config/database');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
@@ -8,6 +9,15 @@ const emailService = require('../services/email.service');
 const resumeParser = require('../services/resumeParser.service');
 const certificationExpiryService = require('../services/certificationExpiry.service');
 const skillDecayService = require('../services/skillDecay.service');
+const applicationScoring = require('../services/applicationScoring.service');
+const {
+    hasResumeMatchScore,
+    autoCalculateMatchScore,
+    ingestApplicationResume,
+    runApplicationScoring,
+    parseJsonField,
+    buildResumeSnapshot
+} = applicationScoring;
 
 const attachSkillFreshness = async (application) => {
     const parsed = application.parsed_resume || {};
@@ -94,121 +104,6 @@ const sanitizeApplicationForApplicant = (application) => {
         ...safe
     } = application;
     return safe;
-};
-
-const parseJsonField = (value, fallback = null) => {
-    if (value === null || value === undefined) return fallback;
-    if (typeof value === 'object') return value;
-    if (typeof value === 'string') {
-        try {
-            return JSON.parse(value);
-        } catch {
-            return fallback;
-        }
-    }
-    return fallback;
-};
-
-const buildResumeSnapshot = (row) => {
-    const parsed = parseJsonField(row?.resume_parsed_data);
-    if (parsed && typeof parsed === 'object') {
-        return {
-            skills: parsed.skills || row?.parsed_skills || [],
-            experience: parsed.experience || row?.parsed_experience || [],
-            education: parsed.education || row?.parsed_education || [],
-            certifications: parsed.certifications || row?.parsed_certifications || []
-        };
-    }
-    return {
-        skills: row?.parsed_skills || [],
-        experience: row?.parsed_experience || [],
-        education: row?.parsed_education || [],
-        certifications: row?.parsed_certifications || []
-    };
-};
-
-const hasResumeMatchScore = (application) => {
-    const score = application?.resume_match_score;
-    return score !== null && score !== undefined && score !== '';
-};
-
-const persistMatchScore = async (applicationId, matchScore) => {
-    const overallScore = matchScore?.overallScore ?? matchScore;
-    if (overallScore === null || overallScore === undefined) return null;
-
-    await db.query(
-        `UPDATE applications
-         SET resume_match_score = $1,
-             resume_match_details = $2,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3`,
-        [
-            overallScore,
-            JSON.stringify(typeof matchScore === 'object' ? matchScore : { overallScore }),
-            applicationId
-        ]
-    );
-    return overallScore;
-};
-
-const autoCalculateMatchScore = async (applicationId, jobId, existing = {}) => {
-    if (hasResumeMatchScore(existing)) {
-        return existing.resume_match_score;
-    }
-
-    if (existing.ai_overall_score !== null && existing.ai_overall_score !== undefined) {
-        return persistMatchScore(applicationId, { overallScore: existing.ai_overall_score });
-    }
-
-    try {
-        const resumeResult = await db.query(`
-            SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
-                COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
-                COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
-                COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
-                COALESCE(rc.raw_text, re.raw_text) as resume_text,
-                a.resume_parsed_data
-            FROM applications a
-            LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
-            LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
-            LEFT JOIN resumes rc ON rc.candidate_id = cp.id
-            LEFT JOIN resumes re ON re.employee_id = ep.id
-            WHERE a.id = $1
-            ORDER BY COALESCE(rc.is_primary, re.is_primary) DESC,
-                     COALESCE(rc.created_at, re.created_at) DESC
-            LIMIT 1
-        `, [applicationId]);
-
-        const jobResult = await db.query(
-            'SELECT required_skills, min_experience_years, education_requirement, description, requirements FROM jobs WHERE id = $1',
-            [jobId]
-        );
-        const job = jobResult.rows[0] || {};
-        const jobRequirements = {
-            required_skills: job.required_skills || [],
-            min_experience_years: job.min_experience_years || 0,
-            education_level: job.education_requirement || '',
-            job_description: job.description || '',
-            job_requirements_text: job.requirements || ''
-        };
-
-        const rd = resumeResult.rows[0] || {};
-        const parsedResume = buildResumeSnapshot(rd);
-        const hasParsedData = (parsedResume.skills?.length || 0) > 0
-            || (parsedResume.experience?.length || 0) > 0
-            || (parsedResume.education?.length || 0) > 0;
-
-        if (!rd.resume_text && !hasParsedData) {
-            return null;
-        }
-
-        const baseScore = resumeParser.calculateJobMatchScoreBasic(parsedResume, jobRequirements);
-        const matchScore = resumeParser.applySkillDecay(parsedResume, jobRequirements, baseScore);
-        return persistMatchScore(applicationId, matchScore);
-    } catch (err) {
-        console.error(`Auto match score error for ${applicationId}:`, err.message);
-        return null;
-    }
 };
 
 const normalizeApplicationStatus = (status) => (status === 'pending' ? 'submitted' : status);
@@ -621,36 +516,16 @@ router.post('/', authenticate, uploadResume, handleUploadError, async (req, res)
 
         const application = result.rows[0];
 
-        // Trigger AI screening asynchronously (uses GPT-4o-mini via resume parser)
-        aiService.screenApplication(application, job).then(async (scores) => {
-            await db.query(`
-                UPDATE applications SET
-                    ai_overall_score = $1,
-                    ai_skill_match_score = $2,
-                    ai_experience_match_score = $3,
-                    ai_education_match_score = $4,
-                    ai_cultural_fit_score = $5,
-                    ai_skill_gap_analysis = $6,
-                    ai_strengths = $7,
-                    ai_concerns = $8,
-                    ai_interview_questions = $9,
-                    ai_success_prediction = $10,
-                    ai_retention_prediction = $11,
-                    ai_recommendation = $12,
-                    resume_match_score = $1,
-                    resume_match_details = $13
-                WHERE id = $14
-            `, [
-                scores.overallScore, scores.skillMatchScore, scores.experienceMatchScore,
-                scores.educationMatchScore, scores.culturalFitScore,
-                JSON.stringify(scores.skillGapAnalysis), JSON.stringify(scores.strengths),
-                JSON.stringify(scores.concerns), JSON.stringify(scores.interviewQuestions),
-                scores.successPrediction, scores.retentionPrediction, scores.recommendation,
-                JSON.stringify(scores._resumeMatchDetails || {}),
-                application.id
-            ]);
-            console.log(`Unified AI score for application ${application.id}: ${scores.overallScore}%`);
-        }).catch(console.error);
+        if (req.file) {
+            await ingestApplicationResume({
+                file: req.file,
+                candidateId,
+                employeeId,
+                applicationId: application.id
+            });
+        }
+
+        await runApplicationScoring(application, job);
 
         // Send confirmation email
         const userResult = await db.query('SELECT email FROM users WHERE id = $1', [req.user.id]);
