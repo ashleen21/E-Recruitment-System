@@ -175,7 +175,7 @@ const fetchInterviewFeedback = async (applicationId) => {
 };
 
 // Get all applications (HR view)
-router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), async (req, res) => {
+router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter', 'hr'), async (req, res) => {
     try {
         const { job_id, jobId, status, search, min_score, page = 1, limit = 20, sort = 'submitted_at', order = 'DESC' } = req.query;
         const effectiveJobId = job_id || jobId;
@@ -242,18 +242,8 @@ router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), asy
         // Auto-calculate match scores for applications that don't have one (fast, no OpenAI)
         const appsWithoutScore = result.rows.filter((a) => !hasResumeMatchScore(a));
         if (appsWithoutScore.length > 0) {
-            await scoreApplicationsWithoutMatch(appsWithoutScore.slice(0, 15));
-            const pendingIds = appsWithoutScore.map((a) => a.id);
-            const refreshed = await db.query(
-                'SELECT id, resume_match_score, ai_overall_score FROM applications WHERE id = ANY($1::uuid[])',
-                [pendingIds]
-            );
-            const scoreById = new Map(refreshed.rows.map((r) => [r.id, r]));
-            result.rows.forEach((app) => {
-                const latest = scoreById.get(app.id);
-                if (latest) {
-                    app.resume_match_score = latest.resume_match_score ?? latest.ai_overall_score;
-                }
+            scoreApplicationsWithoutMatch(appsWithoutScore.slice(0, 10)).catch((err) => {
+                console.error('Background application scoring error:', err.message);
             });
         }
 

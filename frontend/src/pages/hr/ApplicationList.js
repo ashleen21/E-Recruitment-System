@@ -31,7 +31,7 @@ const ApplicationList = () => {
     queryFn: () => jobsAPI.getAll({ limit: 100 }),
   });
 
-  const { data: applications, isLoading } = useQuery({
+  const { data: applications, isLoading, isError, error } = useQuery({
     queryKey: ['applications', filters],
     queryFn: () => applicationsAPI.getAll(filters),
     // Auto-refetch to pick up background match score calculations
@@ -355,6 +355,12 @@ const ApplicationList = () => {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {isError && (
+        <div className="card p-4 mb-4 bg-red-50 border border-red-200 text-red-700 text-sm">
+          Failed to load applications: {error?.response?.data?.error || error?.message || 'Server error'}. Refresh the page.
         </div>
       )}
 
