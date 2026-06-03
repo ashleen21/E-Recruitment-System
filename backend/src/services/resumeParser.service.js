@@ -1075,6 +1075,7 @@ Extract as much information as possible from EVERY section of the resume. For an
                 const decayedDetails = this.applySkillDecay(parsedResume, jobRequirements, enrichedDetails);
                 return {
                     ...decayedDetails,
+                    overallScore: mlResult.score,
                     mlPowered: true,
                     model: mlResult.metadata || {}
                 };

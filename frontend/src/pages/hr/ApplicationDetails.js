@@ -28,6 +28,7 @@ import {
   FlagIcon,
 } from '@heroicons/react/24/outline';
 import { applicationsAPI, aiAPI } from '../../services/api';
+import { uploadUrl, hasMatchScore } from '../../utils/mediaUrl';
 
 const ApplicationDetails = () => {
   const { id } = useParams();
@@ -35,9 +36,10 @@ const ApplicationDetails = () => {
   const [showResumeModal, setShowResumeModal] = useState(false);
   const [rejectionModal, setRejectionModal] = useState({ show: false, subject: '', body: '' });
 
-  const { data: application, isLoading } = useQuery({
+  const { data: application, isLoading, isError, error } = useQuery({
     queryKey: ['application', id],
     queryFn: () => applicationsAPI.getById(id),
+    retry: 1,
   });
 
   const rejectionDraftMutation = useMutation({
@@ -150,14 +152,46 @@ const ApplicationDetails = () => {
     );
   }
 
+  if (isError) {
+    return (
+      <div className="card p-8 text-center">
+        <ExclamationTriangleIcon className="h-12 w-12 text-red-500 mx-auto mb-4" />
+        <h2 className="text-lg font-semibold text-gray-900 mb-2">Could not load application</h2>
+        <p className="text-gray-600 mb-4">
+          {error?.response?.data?.error || error?.message || 'The server returned an error. Try again in a moment.'}
+        </p>
+        <Link to="/hr/applications" className="btn-primary inline-block">Back to Applications</Link>
+      </div>
+    );
+  }
+
   // Handle both axios response wrapper and direct data
   const app = application?.data || application;
+
+  if (!app?.id) {
+    return (
+      <div className="card p-8 text-center">
+        <p className="text-gray-600 mb-4">Application not found.</p>
+        <Link to="/hr/applications" className="btn-primary inline-block">Back to Applications</Link>
+      </div>
+    );
+  }
+
+  const displayMatchScore = hasMatchScore(app.resume_match_score)
+    ? app.resume_match_score
+    : app.ai_overall_score;
   const parsedResume = app?.parsed_resume;
-  const matchSource = app?.resume_match_details?.mlPowered
+  const matchDetailsRaw = app?.resume_match_details;
+  const matchDetailsObj = Array.isArray(matchDetailsRaw)
+    ? null
+    : (typeof matchDetailsRaw === 'string'
+      ? (() => { try { return JSON.parse(matchDetailsRaw); } catch { return null; } })()
+      : matchDetailsRaw);
+  const matchSource = matchDetailsObj?.mlPowered
     ? 'ml'
-    : app?.resume_match_details?.aiPowered
+    : matchDetailsObj?.aiPowered
       ? 'openai'
-      : app?.resume_match_details
+      : matchDetailsObj
         ? 'rule'
         : null;
   
@@ -285,11 +319,11 @@ const ApplicationDetails = () => {
                 className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-emerald-700 disabled:opacity-50 flex items-center"
               >
                 <ArrowPathIcon className={`h-4 w-4 mr-2 ${matchScoreMutation.isPending ? 'animate-spin' : ''}`} />
-                {matchScoreMutation.isPending ? 'Calculating...' : app?.resume_match_score ? 'Recalculate' : 'Calculate Match'}
+                {matchScoreMutation.isPending ? 'Calculating...' : hasMatchScore(displayMatchScore) ? 'Recalculate' : 'Calculate Match'}
               </button>
             </div>
 
-            {app?.resume_match_score ? (
+            {hasMatchScore(displayMatchScore) ? (
               <div className="space-y-4">
                 {/* Overall Score */}
                 <div className="flex items-center justify-between p-4 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-lg">
@@ -352,10 +386,10 @@ const ApplicationDetails = () => {
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
-                        <p className="text-3xl font-bold text-emerald-700">{parseFloat(app.resume_match_score).toFixed(0)}%</p>
+                        <p className="text-3xl font-bold text-emerald-700">{parseFloat(displayMatchScore).toFixed(0)}%</p>
                         <button
                           onClick={() => {
-                            setEditedScore(parseFloat(app.resume_match_score).toFixed(0));
+                            setEditedScore(parseFloat(displayMatchScore).toFixed(0));
                             setHrComment(app.hr_score_comment || '');
                             setEditingScore(true);
                           }}
@@ -384,10 +418,10 @@ const ApplicationDetails = () => {
                       <circle cx="48" cy="48" r="40" stroke="#e5e7eb" strokeWidth="8" fill="none" />
                       <circle
                         cx="48" cy="48" r="40"
-                        stroke={parseFloat(app.resume_match_score) >= 70 ? '#10b981' : parseFloat(app.resume_match_score) >= 50 ? '#f59e0b' : '#ef4444'}
+                        stroke={parseFloat(displayMatchScore) >= 70 ? '#10b981' : parseFloat(displayMatchScore) >= 50 ? '#f59e0b' : '#ef4444'}
                         strokeWidth="8"
                         fill="none"
-                        strokeDasharray={`${(parseFloat(app.resume_match_score) / 100) * 251.2} 251.2`}
+                        strokeDasharray={`${(parseFloat(displayMatchScore) / 100) * 251.2} 251.2`}
                         strokeLinecap="round"
                       />
                     </svg>
@@ -1059,7 +1093,7 @@ const ApplicationDetails = () => {
             {resumeUrl ? (
               <div className="space-y-3">
                 <a
-                  href={`http://localhost:5000${resumeUrl}`}
+                  href={`${uploadUrl(resumeUrl)}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="w-full flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors text-left"
@@ -1072,7 +1106,7 @@ const ApplicationDetails = () => {
                   <EyeIcon className="h-5 w-5 text-gray-400" />
                 </a>
                 <a
-                  href={`http://localhost:5000${resumeUrl}`}
+                  href={`${uploadUrl(resumeUrl)}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn-secondary w-full text-center text-sm block"
@@ -1194,7 +1228,7 @@ const ApplicationDetails = () => {
 
             <div className="flex-1 overflow-auto p-4">
               <iframe
-                src={`http://localhost:5000${resumeUrl}`}
+                src={`${uploadUrl(resumeUrl)}`}
                 className="w-full h-full border-0 rounded"
                 title="Resume Preview"
               />
@@ -1202,7 +1236,7 @@ const ApplicationDetails = () => {
 
             <div className="p-4 border-t flex justify-end space-x-3">
               <a
-                href={`http://localhost:5000${resumeUrl}`}
+                href={`${uploadUrl(resumeUrl)}`}
                 download
                 className="btn-secondary"
               >

@@ -52,9 +52,15 @@ const attachSkillFreshness = async (application) => {
             matchDetails = {};
         }
     }
+    if (Array.isArray(matchDetails)) {
+        matchDetails = { items: matchDetails };
+    }
+    if (!matchDetails || typeof matchDetails !== 'object') {
+        matchDetails = {};
+    }
 
     application.resume_match_details = {
-        ...(matchDetails || {}),
+        ...matchDetails,
         skillsFreshness
     };
     application.skill_freshness = skillsFreshness;
@@ -90,14 +96,119 @@ const sanitizeApplicationForApplicant = (application) => {
     return safe;
 };
 
+const parseJsonField = (value, fallback = null) => {
+    if (value === null || value === undefined) return fallback;
+    if (typeof value === 'object') return value;
+    if (typeof value === 'string') {
+        try {
+            return JSON.parse(value);
+        } catch {
+            return fallback;
+        }
+    }
+    return fallback;
+};
+
 const buildResumeSnapshot = (row) => {
-    if (row?.resume_parsed_data) return row.resume_parsed_data;
+    const parsed = parseJsonField(row?.resume_parsed_data);
+    if (parsed && typeof parsed === 'object') {
+        return {
+            skills: parsed.skills || row?.parsed_skills || [],
+            experience: parsed.experience || row?.parsed_experience || [],
+            education: parsed.education || row?.parsed_education || [],
+            certifications: parsed.certifications || row?.parsed_certifications || []
+        };
+    }
     return {
         skills: row?.parsed_skills || [],
         experience: row?.parsed_experience || [],
         education: row?.parsed_education || [],
         certifications: row?.parsed_certifications || []
     };
+};
+
+const hasResumeMatchScore = (application) => {
+    const score = application?.resume_match_score;
+    return score !== null && score !== undefined && score !== '';
+};
+
+const persistMatchScore = async (applicationId, matchScore) => {
+    const overallScore = matchScore?.overallScore ?? matchScore;
+    if (overallScore === null || overallScore === undefined) return null;
+
+    await db.query(
+        `UPDATE applications
+         SET resume_match_score = $1,
+             resume_match_details = $2,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3`,
+        [
+            overallScore,
+            JSON.stringify(typeof matchScore === 'object' ? matchScore : { overallScore }),
+            applicationId
+        ]
+    );
+    return overallScore;
+};
+
+const autoCalculateMatchScore = async (applicationId, jobId, existing = {}) => {
+    if (hasResumeMatchScore(existing)) {
+        return existing.resume_match_score;
+    }
+
+    if (existing.ai_overall_score !== null && existing.ai_overall_score !== undefined) {
+        return persistMatchScore(applicationId, { overallScore: existing.ai_overall_score });
+    }
+
+    try {
+        const resumeResult = await db.query(`
+            SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
+                COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
+                COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
+                COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
+                COALESCE(rc.raw_text, re.raw_text) as resume_text,
+                a.resume_parsed_data
+            FROM applications a
+            LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
+            LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
+            LEFT JOIN resumes rc ON rc.candidate_id = cp.id
+            LEFT JOIN resumes re ON re.employee_id = ep.id
+            WHERE a.id = $1
+            ORDER BY COALESCE(rc.is_primary, re.is_primary) DESC,
+                     COALESCE(rc.created_at, re.created_at) DESC
+            LIMIT 1
+        `, [applicationId]);
+
+        const jobResult = await db.query(
+            'SELECT required_skills, min_experience_years, education_requirement, description, requirements FROM jobs WHERE id = $1',
+            [jobId]
+        );
+        const job = jobResult.rows[0] || {};
+        const jobRequirements = {
+            required_skills: job.required_skills || [],
+            min_experience_years: job.min_experience_years || 0,
+            education_level: job.education_requirement || '',
+            job_description: job.description || '',
+            job_requirements_text: job.requirements || ''
+        };
+
+        const rd = resumeResult.rows[0] || {};
+        const parsedResume = buildResumeSnapshot(rd);
+        const hasParsedData = (parsedResume.skills?.length || 0) > 0
+            || (parsedResume.experience?.length || 0) > 0
+            || (parsedResume.education?.length || 0) > 0;
+
+        if (!rd.resume_text && !hasParsedData) {
+            return null;
+        }
+
+        const baseScore = resumeParser.calculateJobMatchScoreBasic(parsedResume, jobRequirements);
+        const matchScore = resumeParser.applySkillDecay(parsedResume, jobRequirements, baseScore);
+        return persistMatchScore(applicationId, matchScore);
+    } catch (err) {
+        console.error(`Auto match score error for ${applicationId}:`, err.message);
+        return null;
+    }
 };
 
 const normalizeApplicationStatus = (status) => (status === 'pending' ? 'submitted' : status);
@@ -231,67 +342,14 @@ router.get('/', authenticate, authorize('admin', 'hr_manager', 'recruiter'), asy
 
         const result = await db.query(query, params);
 
-        // Auto-calculate match scores for applications that don't have one (fire and forget)
-        const appsWithoutScore = result.rows.filter(a => !a.resume_match_score);
+        // Auto-calculate match scores for applications that don't have one (fast, no OpenAI)
+        const appsWithoutScore = result.rows.filter((a) => !hasResumeMatchScore(a));
         if (appsWithoutScore.length > 0) {
             (async () => {
                 for (const app of appsWithoutScore) {
-                    try {
-                        const resumeResult = await db.query(`
-                            SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
-                                COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
-                                COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
-                                COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
-                                   COALESCE(rc.raw_text, re.raw_text) as resume_text
-                            FROM applications a
-                            LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
-                            LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
-                            LEFT JOIN resumes rc ON rc.candidate_id = cp.id
-                            LEFT JOIN resumes re ON re.employee_id = ep.id
-                            WHERE a.id = $1
-                            ORDER BY COALESCE(rc.is_primary, re.is_primary) DESC,
-                                     COALESCE(rc.created_at, re.created_at) DESC
-                            LIMIT 1
-                        `, [app.id]);
-
-                        if (resumeResult.rows.length > 0 && resumeResult.rows[0].resume_text) {
-                            const rd = resumeResult.rows[0];
-                            const jobResult = await db.query('SELECT required_skills, min_experience_years, education_requirement, description, requirements FROM jobs WHERE id = $1', [app.job_id]);
-                            const job = jobResult.rows[0] || {};
-                            const matchScore = await resumeParser.calculateJobMatchScore(
-                                { skills: rd.parsed_skills || [], education: rd.parsed_education || [], experience: rd.parsed_experience || [] },
-                                {
-                                    required_skills: job.required_skills || [],
-                                    min_experience_years: job.min_experience_years || 0,
-                                    education_level: job.education_requirement || '',
-                                    job_description: job.description || '',
-                                    job_requirements_text: job.requirements || ''
-                                },
-                                rd.resume_text || ''
-                            );
-                            await db.query(
-                                `UPDATE applications
-                                 SET resume_match_score = $1,
-                                     resume_match_details = $2,
-                                     resume_parsed_data = $3,
-                                     updated_at = CURRENT_TIMESTAMP
-                                 WHERE id = $4`,
-                                [
-                                    matchScore.overallScore,
-                                    JSON.stringify(matchScore),
-                                    JSON.stringify({
-                                        skills: rd.parsed_skills || [],
-                                        education: rd.parsed_education || [],
-                                        experience: rd.parsed_experience || [],
-                                        certifications: rd.parsed_certifications || []
-                                    }),
-                                    app.id
-                                ]
-                            );
-                            console.log(`Auto-calculated match score for ${app.first_name} ${app.last_name}: ${matchScore.overallScore}%`);
-                        }
-                    } catch (err) {
-                        console.error(`Auto match score error for ${app.id}:`, err.message);
+                    const score = await autoCalculateMatchScore(app.id, app.job_id, app);
+                    if (score !== null) {
+                        console.log(`Auto-calculated match score for ${app.first_name} ${app.last_name}: ${score}%`);
                     }
                 }
             })();
@@ -458,68 +516,25 @@ router.get('/:id', authenticate, async (req, res) => {
         }
 
         if (HR_ROLES.has(req.user.role)) {
-            const certs = application.parsed_resume?.extracted_certifications
-                || application.resume_parsed_data?.certifications
-                || [];
-            application.certification_status = certificationExpiryService.evaluate(
-                Array.isArray(certs) ? certs : []
-            );
-            await attachSkillFreshness(application);
+            try {
+                const resumeParsed = parseJsonField(application.resume_parsed_data, {});
+                const certs = application.parsed_resume?.extracted_certifications
+                    || resumeParsed?.certifications
+                    || [];
+                application.certification_status = certificationExpiryService.evaluate(
+                    Array.isArray(certs) ? certs : []
+                );
+                await attachSkillFreshness(application);
+            } catch (freshnessError) {
+                console.error('Skill freshness attachment error:', freshnessError.message);
+            }
         }
 
-        // Auto-calculate match score if not yet calculated (fire and forget)
-        if (!application.resume_match_score) {
+        if (!hasResumeMatchScore(application)) {
             (async () => {
-                try {
-                    const resumeResult = await db.query(`
-                           SELECT COALESCE(rc.extracted_skills, re.extracted_skills) as parsed_skills,
-                               COALESCE(rc.extracted_education, re.extracted_education) as parsed_education,
-                               COALESCE(rc.extracted_experience, re.extracted_experience) as parsed_experience,
-                               COALESCE(rc.extracted_certifications, re.extracted_certifications) as parsed_certifications,
-                               COALESCE(rc.raw_text, re.raw_text) as resume_text
-                        FROM applications a
-                        LEFT JOIN candidate_profiles cp ON a.candidate_id = cp.id
-                        LEFT JOIN employee_profiles ep ON a.employee_id = ep.id
-                        LEFT JOIN resumes rc ON rc.candidate_id = cp.id
-                        LEFT JOIN resumes re ON re.employee_id = ep.id
-                        WHERE a.id = $1
-                        ORDER BY COALESCE(rc.is_primary, re.is_primary) DESC,
-                                 COALESCE(rc.created_at, re.created_at) DESC
-                        LIMIT 1
-                    `, [application.id]);
-
-                    if (resumeResult.rows.length > 0 && resumeResult.rows[0].resume_text) {
-                        const rd = resumeResult.rows[0];
-                        const jobResult = await db.query('SELECT required_skills, min_experience_years, education_requirement FROM jobs WHERE id = $1', [application.job_id]);
-                        const job = jobResult.rows[0] || {};
-                        const matchScore = await resumeParser.calculateJobMatchScore(
-                            { skills: rd.parsed_skills || [], education: rd.parsed_education || [], experience: rd.parsed_experience || [] },
-                            { required_skills: job.required_skills || [], min_experience_years: job.min_experience_years || 0, education_level: job.education_requirement || '' },
-                            rd.resume_text || ''
-                        );
-                        await db.query(
-                            `UPDATE applications
-                             SET resume_match_score = $1,
-                                 resume_match_details = $2,
-                                 resume_parsed_data = $3,
-                                 updated_at = CURRENT_TIMESTAMP
-                             WHERE id = $4`,
-                            [
-                                matchScore.overallScore,
-                                JSON.stringify(matchScore),
-                                JSON.stringify({
-                                    skills: rd.parsed_skills || [],
-                                    education: rd.parsed_education || [],
-                                    experience: rd.parsed_experience || [],
-                                    certifications: rd.parsed_certifications || []
-                                }),
-                                application.id
-                            ]
-                        );
-                        console.log(`Auto-calculated match score for application ${application.id}: ${matchScore.overallScore}%`);
-                    }
-                } catch (err) {
-                    console.error('Auto match score error:', err.message);
+                const score = await autoCalculateMatchScore(application.id, application.job_id, application);
+                if (score !== null) {
+                    console.log(`Auto-calculated match score for application ${application.id}: ${score}%`);
                 }
             })();
         }

@@ -13,6 +13,7 @@ import {
   TrophyIcon,
 } from '@heroicons/react/24/outline';
 import { applicationsAPI, jobsAPI } from '../../services/api';
+import { hasMatchScore } from '../../utils/mediaUrl';
 
 const ApplicationList = () => {
   const [searchParams] = useSearchParams();
@@ -36,7 +37,7 @@ const ApplicationList = () => {
     // Auto-refetch to pick up background match score calculations
     refetchInterval: (data) => {
       const apps = data?.data?.applications || data?.data || [];
-      const hasPending = apps.some(a => !a.resume_match_score);
+      const hasPending = apps.some((a) => !hasMatchScore(a.resume_match_score));
       return hasPending ? 8000 : false; // refetch every 8s if any app missing score
     },
   });
@@ -399,9 +400,13 @@ const ApplicationList = () => {
                   <td className="px-6 py-4 text-gray-600">{app.job_title}</td>
                   <td className="px-6 py-4">
                     <div className="flex items-center space-x-2">
-                      {app.resume_match_score ? (
+                      {hasMatchScore(app.resume_match_score) ? (
                         <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${getMatchScoreBadge(parseFloat(app.resume_match_score))}`}>
                           {parseFloat(app.resume_match_score).toFixed(0)}%
+                        </span>
+                      ) : hasMatchScore(app.ai_overall_score) ? (
+                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${getMatchScoreBadge(parseFloat(app.ai_overall_score))}`}>
+                          {parseFloat(app.ai_overall_score).toFixed(0)}%
                         </span>
                       ) : (
                         <span className="flex items-center text-xs text-gray-500">
